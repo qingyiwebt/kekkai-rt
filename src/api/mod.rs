@@ -11,6 +11,7 @@ use axum::{
 };
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
+use tracing::info;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -35,6 +36,12 @@ impl AppState {
             }
         });
         state
+    }
+
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        info!("waiting for active execution tasks");
+        self.tasks.wait_for_idle().await;
+        self.sandbox.shutdown().await
     }
 }
 

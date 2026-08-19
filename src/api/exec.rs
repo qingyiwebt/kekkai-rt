@@ -15,6 +15,7 @@ use axum::{
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 pub(super) async fn create(
@@ -33,10 +34,11 @@ pub(super) async fn create(
             .unwrap_or(300)
             .min(state.config.sandbox.max_timeout_seconds),
     );
-    let (id, _) = state.tasks.create().await;
+    let (id, _, lease) = state.tasks.create().await;
     let tasks = state.tasks.clone();
     let sandbox = state.sandbox.clone();
     tokio::spawn(async move {
+        let _lease = lease;
         run_task(tasks, sandbox, id, req, timeout).await;
     });
     (StatusCode::ACCEPTED, Json(json!({"task_id":id}))).into_response()
@@ -49,10 +51,18 @@ async fn run_task(
     req: ExecRequest,
     timeout: Duration,
 ) {
+    info!(
+        task_id = %id,
+        program = %req.argv.first().map(String::as_str).unwrap_or(""),
+        argc = req.argv.len(),
+        timeout_seconds = timeout.as_secs(),
+        "execution task started"
+    );
     tasks.publish(id, Event::Started).await;
     let running = match sandbox.exec(&req).await {
         Ok(x) => x,
         Err(e) => {
+            warn!(task_id = %id, error = %e, "failed to start execution task");
             tasks.publish(id, Event::Failed(e.to_string())).await;
             return;
         }
@@ -60,7 +70,9 @@ async fn run_task(
     let mut child = running.child;
     if let Some(input) = req.stdin {
         if let Some(mut pipe) = running.stdin {
-            let _ = pipe.write_all(input.as_bytes()).await;
+            if let Err(error) = pipe.write_all(input.as_bytes()).await {
+                debug!(task_id = %id, error = %error, "failed to write task stdin");
+            }
         }
     }
     let mut stdout = running.stdout;
@@ -69,13 +81,19 @@ async fn run_task(
     let read_stdout = tokio::spawn(async move {
         if let Some(mut pipe) = stdout.take() {
             let mut buf = [0; 8192];
-            while let Ok(n) = pipe.read(&mut buf).await {
-                if n == 0 {
-                    break;
+            loop {
+                match pipe.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        output_tasks
+                            .publish(id, Event::Stdout(String::from_utf8_lossy(&buf[..n]).into()))
+                            .await;
+                    }
+                    Err(error) => {
+                        warn!(task_id = %id, error = %error, "failed to read task stdout");
+                        break;
+                    }
                 }
-                output_tasks
-                    .publish(id, Event::Stdout(String::from_utf8_lossy(&buf[..n]).into()))
-                    .await;
             }
         }
     });
@@ -83,13 +101,19 @@ async fn run_task(
     let read_stderr = tokio::spawn(async move {
         if let Some(mut pipe) = stderr.take() {
             let mut buf = [0; 8192];
-            while let Ok(n) = pipe.read(&mut buf).await {
-                if n == 0 {
-                    break;
+            loop {
+                match pipe.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        error_tasks
+                            .publish(id, Event::Stderr(String::from_utf8_lossy(&buf[..n]).into()))
+                            .await;
+                    }
+                    Err(error) => {
+                        warn!(task_id = %id, error = %error, "failed to read task stderr");
+                        break;
+                    }
                 }
-                error_tasks
-                    .publish(id, Event::Stderr(String::from_utf8_lossy(&buf[..n]).into()))
-                    .await;
             }
         }
     });
@@ -97,10 +121,17 @@ async fn run_task(
         Ok(Ok(status)) => {
             let _ = read_stdout.await;
             let _ = read_stderr.await;
+            info!(task_id = %id, exit_code = ?status.code(), "execution task finished");
             tasks.publish(id, Event::Finished(status.code())).await
         }
-        Ok(Err(e)) => tasks.publish(id, Event::Failed(e.to_string())).await,
+        Ok(Err(e)) => {
+            warn!(task_id = %id, error = %e, "execution task failed while waiting");
+            let _ = read_stdout.await;
+            let _ = read_stderr.await;
+            tasks.publish(id, Event::Failed(e.to_string())).await
+        }
         Err(_) => {
+            info!(task_id = %id, "execution task timed out");
             let _ = child.kill().await;
             let _ = child.wait().await;
             let _ = read_stdout.await;

@@ -26,6 +26,8 @@ network_dns = ["1.1.1.1", "8.8.8.8"]
 
 The sandbox network is configured in the `[sandbox]` section. `network_mode = "nat"` is the default and creates an isolated bridge/veth network with outbound NAT. `network_mode = "host"` shares the host network namespace, while `network_mode = "none"` keeps the container isolated from external networks. NAT mode requires root (or `CAP_NET_ADMIN`), `ip`, `nsenter`, and `iptables` on the host.
 
+The container belongs to the AgentCell process. AgentCell starts `runc` or `runsc` in foreground mode, waits for accepted execution tasks during graceful shutdown, then kills and deletes the container and removes its session veth. The bridge and iptables rules are retained as shared, idempotently managed host resources. A stale container left by an unclean termination is removed at the next startup; Linux parent-death protection also makes the foreground runtime follow AgentCell when the process is forcefully terminated.
+
 For NAT mode, `network_bridge`, `network_subnet`, `network_gateway`, `network_ip`, and `network_dns` control the managed bridge, container address, default route, and resolver configuration. AgentCell generates the complete OCI `config.json`, including the rootfs, standard system mounts, namespaces, and optional `/workspace` bind mount.
 
 All network fields are validated at startup. The bridge name must be a valid Linux interface name, the gateway and container address must belong to the configured subnet, and DNS entries must be IPv4 addresses. Relative paths are resolved from the directory containing `config.toml`.
@@ -35,6 +37,9 @@ Run with:
 ```sh
 # Start the service using ./config.toml
 agent-cell
+
+# Enable detailed lifecycle and network diagnostics
+RUST_LOG=agent_cell=debug agent-cell
 
 # Check configuration, rootfs mountpoints, runtime, and NAT dependencies
 agent-cell check

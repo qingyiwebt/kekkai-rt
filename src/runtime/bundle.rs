@@ -1,8 +1,6 @@
-use super::CONFIG_HASH_ANNOTATION;
 use crate::config::{NetworkMode, NetworkSettings, SandboxConfig};
 use anyhow::Context;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -11,7 +9,7 @@ use std::{
 pub(super) fn prepare_managed_bundle(
     cfg: &SandboxConfig,
     settings: &NetworkSettings,
-) -> anyhow::Result<(PathBuf, String)> {
+) -> anyhow::Result<PathBuf> {
     let bundle_dir = if cfg.managed_bundle_dir.as_os_str().is_empty() {
         cfg.rootfs_dir
             .parent()
@@ -54,7 +52,7 @@ pub(super) fn prepare_managed_bundle(
         namespaces.push(json!({"type":"network"}));
     }
 
-    let mut spec = json!({
+    let spec = json!({
         "ociVersion": "1.0.2",
         "process": {
             "terminal": false,
@@ -68,20 +66,10 @@ pub(super) fn prepare_managed_bundle(
         "linux": {"namespaces": namespaces}
     });
 
-    let config_hash = {
-        let serialized = serde_json::to_vec(&spec).context("serialize OCI config for hashing")?;
-        let digest = Sha256::digest(serialized);
-        format!("{digest:x}")
-    };
-    spec["annotations"] = json!({
-        CONFIG_HASH_ANNOTATION: config_hash,
-        "io.agentcell.network-mode": settings.mode.as_str()
-    });
-
     let serialized = serde_json::to_vec_pretty(&spec).context("serialize managed OCI config")?;
     fs::write(&config_path, serialized)
         .with_context(|| format!("write managed OCI config {}", config_path.display()))?;
-    Ok((bundle_dir, config_hash))
+    Ok(bundle_dir)
 }
 
 #[cfg(test)]
@@ -109,12 +97,11 @@ workspace_dir = "."
         cfg.managed_bundle_dir = temp.path().join("bundle");
         let settings = cfg.network_settings().unwrap();
 
-        let (bundle, hash) = prepare_managed_bundle(&cfg, &settings).unwrap();
+        let bundle = prepare_managed_bundle(&cfg, &settings).unwrap();
         let spec: Value =
             serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
         assert_eq!(spec["root"]["path"], rootfs.to_string_lossy().as_ref());
-        assert_eq!(spec["annotations"][CONFIG_HASH_ANNOTATION], hash);
-        assert_eq!(spec["annotations"]["io.agentcell.network-mode"], "nat");
+        assert!(spec.get("annotations").is_none());
         assert_eq!(spec["process"]["args"][0], "/bin/sh");
         assert_eq!(spec["mounts"][7]["destination"], "/workspace");
         assert_eq!(

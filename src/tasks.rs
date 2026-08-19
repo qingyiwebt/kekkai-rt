@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Notify, RwLock};
+use tracing::debug;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -62,14 +63,41 @@ struct Task {
 #[derive(Clone)]
 pub struct TaskStore {
     inner: Arc<RwLock<HashMap<Uuid, Task>>>,
+    active: Arc<ActiveTasks>,
+}
+
+struct ActiveTasks {
+    count: std::sync::atomic::AtomicUsize,
+    idle: Notify,
+}
+
+pub struct TaskLease {
+    active: Arc<ActiveTasks>,
+}
+
+impl Drop for TaskLease {
+    fn drop(&mut self) {
+        if self
+            .active
+            .count
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+        {
+            self.active.idle.notify_waiters();
+        }
+    }
 }
 impl TaskStore {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
+            active: Arc::new(ActiveTasks {
+                count: std::sync::atomic::AtomicUsize::new(0),
+                idle: Notify::new(),
+            }),
         }
     }
-    pub async fn create(&self) -> (Uuid, broadcast::Receiver<Event>) {
+    pub async fn create(&self) -> (Uuid, broadcast::Receiver<Event>, TaskLease) {
         let id = Uuid::new_v4();
         let (tx, rx) = broadcast::channel(128);
         let task = Task {
@@ -86,10 +114,14 @@ impl TaskStore {
             expires: tokio::time::Instant::now() + Duration::from_secs(300),
         };
         self.inner.write().await.insert(id, task);
-        (id, rx)
+        self.active
+            .count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        (id, rx, TaskLease { active: self.active.clone() })
     }
     pub async fn publish(&self, id: Uuid, event: Event) {
         if let Some(t) = self.inner.write().await.get_mut(&id) {
+            debug!(task_id = %id, event = event.name(), "publishing task event");
             match &event {
                 Event::Stdout(s) => t.snapshot.stdout.push_str(s),
                 Event::Stderr(s) => t.snapshot.stderr.push_str(s),
@@ -127,6 +159,29 @@ impl TaskStore {
         let now = tokio::time::Instant::now();
         self.inner.write().await.retain(|_, t| t.expires > now);
     }
+
+    pub async fn wait_for_idle(&self) {
+        loop {
+            if self
+                .active
+                .count
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                return;
+            }
+            let notified = self.active.idle.notified();
+            if self
+                .active
+                .count
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -136,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn completed_task_keeps_event_history_and_snapshot() {
         let store = TaskStore::new();
-        let (id, _) = store.create().await;
+        let (id, _, _lease) = store.create().await;
         store.publish(id, Event::Started).await;
         store.publish(id, Event::Stdout("hello".into())).await;
         store.publish(id, Event::Finished(Some(0))).await;
@@ -149,5 +204,19 @@ mod tests {
         let (history, _) = store.subscribe(id).await.unwrap();
         assert_eq!(history.len(), 3);
         assert!(matches!(history[2], Event::Finished(Some(0))));
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_until_task_lease_is_released() {
+        let store = TaskStore::new();
+        let (_, _, lease) = store.create().await;
+        let waiting = tokio::spawn({
+            let store = store.clone();
+            async move { store.wait_for_idle().await }
+        });
+
+        assert!(!waiting.is_finished());
+        drop(lease);
+        waiting.await.unwrap();
     }
 }

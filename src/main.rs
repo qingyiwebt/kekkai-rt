@@ -39,9 +39,7 @@ enum Distribution {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    init_tracing();
     let args = Args::parse();
     match args.command {
         None => run_server(&args.config).await,
@@ -61,18 +59,57 @@ async fn run_server(config_path: &std::path::Path) -> anyhow::Result<()> {
             .await
             .context("start sandbox")?,
     );
-    let state = api::AppState::new(config.clone(), sandbox);
+    let state = api::AppState::new(config.clone(), sandbox.clone());
     let app = api::router(state.clone());
-    let listener = tokio::net::TcpListener::bind(config.api.listen_addr).await?;
+    let listener = match tokio::net::TcpListener::bind(config.api.listen_addr).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            if let Err(cleanup_error) = sandbox.shutdown().await {
+                return Err(anyhow::anyhow!(
+                    "bind API listener: {error}; sandbox shutdown failed: {cleanup_error}"
+                ));
+            }
+            return Err(error.into());
+        }
+    };
     info!(address = %listener.local_addr()?, backend = %config.sandbox.backend, "agent-cell listening");
-    axum::serve(listener, app)
+    let server_result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
-        .await?;
-    Ok(())
+        .await;
+    info!("HTTP server stopped; shutting down sandbox");
+    let shutdown_result = state.shutdown().await;
+    match (server_result, shutdown_result) {
+        (Err(server_error), Err(shutdown_error)) => Err(anyhow::anyhow!(
+            "server failed: {server_error}; sandbox shutdown failed: {shutdown_error}"
+        )),
+        (Err(error), Ok(())) => Err(error.into()),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 async fn shutdown() {
-    let _ = tokio::signal::ctrl_c().await;
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => info!("received Ctrl-C"),
+            _ = terminate.recv() => info!("received SIGTERM"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("received shutdown signal");
+    }
+}
+
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("agent_cell=info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 #[cfg(test)]

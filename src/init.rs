@@ -443,6 +443,7 @@ mod tests {
             .await
             .unwrap();
         server.abort();
+        server.await.unwrap_err();
 
         let config = crate::config::Config::load(&config_path).unwrap();
         assert!(config_path.is_file());
@@ -485,6 +486,7 @@ mod tests {
                 .is_err()
         );
         server.abort();
+        server.await.unwrap_err();
         assert!(!temp.path().join("sysroot").exists());
         assert!(!temp.path().read_dir().unwrap().any(|entry| entry
             .unwrap()

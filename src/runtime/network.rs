@@ -2,15 +2,17 @@ use crate::config::{NetworkMode, NetworkSettings};
 use anyhow::{bail, Context};
 use std::{ffi::OsStr, process::Output};
 use tokio::process::Command;
+use tracing::{debug, info, warn};
 
 pub(super) async fn configure_network(settings: &NetworkSettings, pid: i32) -> anyhow::Result<()> {
+    info!(mode = %settings.mode.as_str(), pid, "configuring sandbox network");
     match settings.mode {
         NetworkMode::Host => {
-            cleanup_host_veth().await;
+            cleanup_session().await;
             Ok(())
         }
         NetworkMode::None => {
-            cleanup_host_veth().await;
+            cleanup_session().await;
             nsenter_ip(pid, ["link", "set", "lo", "up"]).await?;
             Ok(())
         }
@@ -39,11 +41,22 @@ async fn configure_nat(settings: &NetworkSettings, pid: i32) -> anyhow::Result<(
     Ok(())
 }
 
-async fn cleanup_host_veth() {
-    let _ = run_command("ip", &["link", "del", "agentcellv"]).await;
+pub(super) async fn cleanup_session() {
+    match run_command("ip", &["link", "del", "agentcellv"]).await {
+        Ok(output) if output.status.success() => {
+            info!("removed sandbox host veth");
+        }
+        Ok(_) => {
+            debug!("sandbox host veth was already absent");
+        }
+        Err(error) => {
+            warn!(error = %error, "could not inspect sandbox host veth");
+        }
+    }
 }
 
 async fn ensure_bridge(settings: &NetworkSettings) -> anyhow::Result<()> {
+    debug!(bridge = %settings.bridge, "ensuring sandbox bridge");
     if !run_command("ip", &["link", "show", "dev", &settings.bridge])
         .await
         .context("check sandbox bridge")?
@@ -238,6 +251,7 @@ async fn nsenter_ip<const N: usize>(pid: i32, args: [&str; N]) -> anyhow::Result
 }
 
 async fn run_command(program: &str, args: &[&str]) -> anyhow::Result<Output> {
+    debug!(program, args = ?args, "running host network command");
     Command::new(program)
         .args(args)
         .output()
@@ -250,6 +264,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    debug!(program, context, "running checked host command");
     let output = Command::new(program)
         .args(args)
         .output()
