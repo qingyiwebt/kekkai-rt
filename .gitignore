@@ -1,0 +1,12 @@
+/target/
+/alpine/
+config.toml
+api.secret
+*.secret
+.env
+.DS_Store
+.idea/
+.vscode/
+
+AGENTS.md
+CLAUDE.md

@@ -1,0 +1,15 @@
+[api]
+listen_addr = "0.0.0.0:8080"
+secret = "replace-me"
+
+[sandbox]
+rootfs_dir = "./alpine"
+workspace_dir = "./workspace"
+backend = "runsc"
+max_timeout_seconds = 300
+network_mode = "nat" # nat, host, or none
+network_bridge = "agentcell0"
+network_subnet = "10.200.0.0/24"
+network_gateway = "10.200.0.1"
+network_ip = "10.200.0.2"
+network_dns = ["1.1.1.1", "8.8.8.8"]

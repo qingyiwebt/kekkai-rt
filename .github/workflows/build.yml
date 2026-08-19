@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build x86_64 Linux binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --locked --release --target x86_64-unknown-linux-gnu
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/agent-cell dist/agent-cell-x86_64-unknown-linux-gnu
+          sha256sum dist/agent-cell-x86_64-unknown-linux-gnu > dist/agent-cell-x86_64-unknown-linux-gnu.sha256
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-cell-x86_64-unknown-linux-gnu
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
