@@ -7,23 +7,32 @@ export interface AgentCellClientOptions {
   fetch?: typeof globalThis.fetch;
 }
 
-export interface RequestOptions {
+export interface ExecRequest {
+  /** Absolute or container-relative executable path. */
+  command: string;
+  /** Arguments passed to the executable without shell interpolation. */
+  args?: readonly string[];
+  /** Working directory inside the sandbox container. */
+  cwd?: string;
+  /** Environment variables added to the process. */
+  env?: Readonly<Record<string, string>>;
+  /** UTF-8 text written to the process stdin. */
+  input?: string;
+  /** Process timeout in milliseconds. */
+  timeoutMs?: number;
+}
+
+export interface ExecStartOptions {
   signal?: AbortSignal;
 }
 
-export interface StreamOptions extends RequestOptions {}
-
-export interface WaitOptions extends StreamOptions {
+export interface ExecWaitOptions extends ExecStartOptions {
   onEvent?: (event: ExecEvent) => void | Promise<void>;
 }
 
-export interface ExecRequest {
-  argv: readonly string[];
-  cwd?: string;
-  env?: Readonly<Record<string, string>>;
-  stdin?: string;
-  timeoutSeconds?: number;
-}
+export interface ExecRunOptions extends ExecWaitOptions {}
+
+export interface ExecTaskOptions extends ExecStartOptions {}
 
 export type ExecStatus = "running" | "finished" | "timedOut" | "failed";
 
@@ -50,9 +59,14 @@ export type ExecEvent =
 
 export interface ExecTask {
   readonly id: string;
-  events(options?: StreamOptions): AsyncIterable<ExecEvent>;
-  snapshot(options?: RequestOptions): Promise<ExecSnapshot>;
-  wait(options?: WaitOptions): Promise<ExecResult>;
+  events(options?: ExecTaskOptions): AsyncIterable<ExecEvent>;
+  snapshot(options?: ExecTaskOptions): Promise<ExecSnapshot>;
+  wait(options?: ExecWaitOptions): Promise<ExecResult>;
+}
+
+export interface ExecutionApi {
+  start(request: ExecRequest, options?: ExecStartOptions): Promise<ExecTask>;
+  run(request: ExecRequest, options?: ExecRunOptions): Promise<ExecResult>;
 }
 
 export interface HealthResponse {
@@ -77,13 +91,24 @@ export interface WorkspaceDirectory {
   entries: WorkspaceEntry[];
 }
 
-export interface WorkspaceClient {
-  list(path?: string, options?: RequestOptions): Promise<WorkspaceDirectory>;
-  readFile(path: string, options?: RequestOptions): Promise<Uint8Array>;
-  writeFile(
+export interface WorkspaceOptions {
+  signal?: AbortSignal;
+}
+
+export interface WorkspaceApi {
+  list(path?: string, options?: WorkspaceOptions): Promise<WorkspaceDirectory>;
+  read(path: string, options?: WorkspaceOptions): Promise<Uint8Array>;
+  readText(path: string, options?: WorkspaceOptions): Promise<string>;
+  write(
     path: string,
     data: string | Uint8Array,
-    options?: RequestOptions,
+    options?: WorkspaceOptions,
   ): Promise<void>;
-  delete(path: string, options?: RequestOptions): Promise<void>;
+  remove(path: string, options?: WorkspaceOptions): Promise<void>;
 }
+
+export type AgentCellErrorKind =
+  | "validation"
+  | "http"
+  | "protocol"
+  | "aborted";

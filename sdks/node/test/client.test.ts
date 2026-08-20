@@ -2,9 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
   AgentCellClient,
-  AgentCellHttpError,
-  AgentCellProtocolError,
-  AgentCellValidationError,
+  AgentCellError,
   type ExecEvent,
 } from "../src/index.js";
 
@@ -47,7 +45,7 @@ function fakeFetch(
   return { fetch, calls };
 }
 
-test("creates an execution with auth and snake_case request fields", async () => {
+test("starts an execution with high-level fields and wire conversion", async () => {
   const { fetch, calls } = fakeFetch(() => jsonResponse({ task_id: "task-1" }, 202));
   const client = new AgentCellClient({
     baseUrl: "http://localhost:8080",
@@ -55,27 +53,31 @@ test("creates an execution with auth and snake_case request fields", async () =>
     fetch,
   });
 
-  const task = await client.createExec({
-    argv: ["/bin/echo", "hello"],
+  const task = await client.exec.start({
+    command: "/bin/echo",
+    args: ["hello"],
     cwd: "/workspace",
     env: { MODE: "test" },
-    stdin: "input",
-    timeoutSeconds: 15,
+    input: "input",
+    timeoutMs: 1_501,
   });
 
   assert.equal(task.id, "task-1");
   assert.equal(calls[0]?.url, "http://localhost:8080/v1/exec");
-  assert.equal(calls[0]?.init?.headers && new Headers(calls[0].init.headers).get("authorization"), "Bearer secret");
+  assert.equal(
+    calls[0]?.init?.headers && new Headers(calls[0].init.headers).get("authorization"),
+    "Bearer secret",
+  );
   assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
     argv: ["/bin/echo", "hello"],
     cwd: "/workspace",
     env: { MODE: "test" },
     stdin: "input",
-    timeout_seconds: 15,
+    timeout_seconds: 2,
   });
 });
 
-test("waits for terminal SSE event and reads the authoritative snapshot", async () => {
+test("runs a task from SSE to the authoritative terminal snapshot", async () => {
   const events: ExecEvent[] = [];
   const { fetch } = fakeFetch((url) => {
     if (url.endsWith("/v1/exec")) {
@@ -85,7 +87,9 @@ test("waits for terminal SSE event and reads the authoritative snapshot", async 
       return sseResponse([
         ": keep-alive\n\n",
         "event: started\ndata: {}\n\n",
-        "event: stdout\ndata: {\"data\":\"hello\\n\"}\n\n",
+        "event: stdout\ndata: {\"data\":\"hello",
+        "\\n\"}\n\n",
+        "event: stderr\ndata: {\"data\":\"warning\\n\"}\n\n",
         "event: finished\ndata: {\"exit_code\":0}\n\n",
       ]);
     }
@@ -94,14 +98,18 @@ test("waits for terminal SSE event and reads the authoritative snapshot", async 
       status: "finished",
       exit_code: 0,
       stdout: "hello\n",
-      stderr: "",
+      stderr: "warning\n",
       error: null,
     });
   });
-  const client = new AgentCellClient({ baseUrl: "http://localhost:8080/", token: "secret", fetch });
+  const client = new AgentCellClient({
+    baseUrl: "http://localhost:8080/",
+    token: "secret",
+    fetch,
+  });
 
-  const result = await client.execute(
-    { argv: ["/bin/echo", "hello"] },
+  const result = await client.exec.run(
+    { command: "/bin/echo", args: ["hello"] },
     {
       onEvent: (event) => {
         events.push(event);
@@ -112,51 +120,110 @@ test("waits for terminal SSE event and reads the authoritative snapshot", async 
   assert.deepEqual(events, [
     { type: "started" },
     { type: "stdout", data: "hello\n" },
+    { type: "stderr", data: "warning\n" },
     { type: "finished", exitCode: 0 },
   ]);
   assert.equal(result.taskId, "task-2");
   assert.equal(result.status, "finished");
   assert.equal(result.stdout, "hello\n");
+  assert.equal(result.stderr, "warning\n");
 });
 
-test("reports HTTP and validation errors with typed errors", async () => {
-  const { fetch } = fakeFetch(() => jsonResponse({ error: "not authorized" }, 401));
-  const client = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "bad", fetch });
+test("maps timeout and failure events to terminal results", async () => {
+  for (const [event, snapshot] of [
+    [
+      "event: timed_out\ndata: {}\n\n",
+      {
+        task_id: "timed-out",
+        status: "timed_out",
+        exit_code: null,
+        stdout: "",
+        stderr: "",
+        error: null,
+      },
+    ],
+    [
+      "event: failed\ndata: {\"error\":\"could not start\"}\n\n",
+      {
+        task_id: "failed",
+        status: "failed",
+        exit_code: null,
+        stdout: "",
+        stderr: "",
+        error: "could not start",
+      },
+    ],
+  ] as const) {
+    const { fetch } = fakeFetch((url) => {
+      if (url.endsWith("/v1/exec")) {
+        return jsonResponse({ task_id: snapshot.task_id }, 202);
+      }
+      if (url.endsWith("/events")) {
+        return sseResponse([event]);
+      }
+      return jsonResponse(snapshot);
+    });
+    const client = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
+    const result = await client.exec.run({ command: "/bin/false" });
+
+    assert.equal(result.taskId, snapshot.task_id);
+    assert.equal(result.status, snapshot.status === "timed_out" ? "timedOut" : "failed");
+  }
+});
+
+test("exposes one typed error for validation, HTTP, protocol, and abort failures", async () => {
+  const http = fakeFetch(() => jsonResponse({ error: "not authorized" }, 401));
+  const httpClient = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "bad", fetch: http.fetch });
 
   await assert.rejects(
-    client.createExec({ argv: ["/bin/echo"] }),
+    httpClient.exec.start({ command: "/bin/echo" }),
     (error: unknown) =>
-      error instanceof AgentCellHttpError &&
+      error instanceof AgentCellError &&
+      error.kind === "http" &&
       error.status === 401 &&
       error.message === "not authorized",
   );
+
   await assert.rejects(
-    client.createExec({ argv: [] }),
-    (error: unknown) => error instanceof AgentCellValidationError,
+    httpClient.exec.start({ command: "" }),
+    (error: unknown) => error instanceof AgentCellError && error.kind === "validation",
+  );
+
+  const protocol = fakeFetch(() => jsonResponse({ task_id: "task-3", status: "unknown" }));
+  const protocolClient = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch: protocol.fetch });
+  const task = await protocolClient.exec.start({ command: "/bin/echo" });
+  await assert.rejects(
+    task.snapshot(),
+    (error: unknown) => error instanceof AgentCellError && error.kind === "protocol",
+  );
+
+  const controller = new AbortController();
+  controller.abort();
+  const aborted = fakeFetch(async (_url, init) => {
+    assert.equal(init?.signal, controller.signal);
+    throw Object.assign(new Error("aborted"), { name: "AbortError" });
+  });
+  const abortedClient = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch: aborted.fetch });
+  await assert.rejects(
+    abortedClient.exec.start({ command: "/bin/echo" }, { signal: controller.signal }),
+    (error: unknown) => error instanceof AgentCellError && error.kind === "aborted",
   );
 });
 
-test("rejects malformed task snapshots", async () => {
-  const { fetch } = fakeFetch(() => jsonResponse({ task_id: "task-3", status: "unknown" }));
-  const client = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
-
-  await assert.rejects(
-    client.getExec("task-3"),
-    (error: unknown) => error instanceof AgentCellProtocolError,
-  );
-});
-
-test("passes AbortSignal through to streaming requests", async () => {
+test("passes AbortSignal through to task event streams", async () => {
   let receivedSignal: AbortSignal | null | undefined;
-  const { fetch } = fakeFetch((_url, init) => {
+  const { fetch } = fakeFetch((url, init) => {
     receivedSignal = init?.signal;
+    if (url.endsWith("/v1/exec")) {
+      return jsonResponse({ task_id: "task-4" }, 202);
+    }
     return sseResponse([]);
   });
   const client = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
   const controller = new AbortController();
+  const task = await client.exec.start({ command: "/bin/echo" });
 
-  const events = client.events("task-4", { signal: controller.signal });
-  for await (const _event of events) {
+  for await (const _event of task.events({ signal: controller.signal })) {
     // The test only verifies the signal passed to fetch.
   }
 

@@ -1,24 +1,23 @@
 export { AgentCellClient } from "./client.js";
-export {
-  AgentCellError,
-  AgentCellHttpError,
-  AgentCellProtocolError,
-  AgentCellValidationError,
-} from "./errors.js";
+export { AgentCellError } from "./errors.js";
 export type {
   AgentCellClientOptions,
+  AgentCellErrorKind,
   ExecEvent,
   ExecRequest,
   ExecResult,
+  ExecRunOptions,
   ExecSnapshot,
+  ExecStartOptions,
   ExecStatus,
   ExecTask,
+  ExecTaskOptions,
+  ExecWaitOptions,
+  ExecutionApi,
   HealthResponse,
-  RequestOptions,
-  StreamOptions,
-  WaitOptions,
-  WorkspaceClient,
+  WorkspaceApi,
   WorkspaceDirectory,
   WorkspaceEntry,
   WorkspaceEntryType,
+  WorkspaceOptions,
 } from "./types.js";
