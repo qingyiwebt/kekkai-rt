@@ -4,45 +4,104 @@ use std::{ffi::OsStr, process::Output};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-pub(super) async fn configure_network(settings: &NetworkSettings, pid: i32) -> anyhow::Result<()> {
-    info!(mode = %settings.mode.as_str(), pid, "configuring sandbox network");
-    match settings.mode {
-        NetworkMode::Host => {
-            cleanup_session().await;
-            Ok(())
+const HOST_VETH: &str = "agentcellv";
+const NETNS_NAME: &str = "agentcellns";
+const NETNS_PATH: &str = "/run/netns/agentcellns";
+
+pub(super) struct NetworkSession {
+    namespace_path: Option<String>,
+}
+
+impl NetworkSession {
+    pub(super) async fn prepare(settings: &NetworkSettings) -> anyhow::Result<Self> {
+        cleanup_session().await;
+        if !matches!(settings.mode, NetworkMode::Nat) {
+            return Ok(Self {
+                namespace_path: None,
+            });
         }
-        NetworkMode::None => {
-            cleanup_session().await;
-            nsenter_ip(pid, ["link", "set", "lo", "up"]).await?;
-            Ok(())
+
+        ensure_bridge(settings).await?;
+        ensure_nat_rules(settings).await?;
+        prepare_nat(settings).await?;
+        Ok(Self {
+            namespace_path: Some(NETNS_PATH.into()),
+        })
+    }
+
+    pub(super) fn namespace_path(&self) -> Option<&str> {
+        self.namespace_path.as_deref()
+    }
+
+    pub(super) async fn configure(
+        &self,
+        settings: &NetworkSettings,
+        pid: i32,
+        runtime: &str,
+        container_id: &str,
+    ) -> anyhow::Result<()> {
+        info!(mode = %settings.mode.as_str(), pid, "configuring sandbox network");
+        match settings.mode {
+            NetworkMode::Host => Ok(()),
+            NetworkMode::None => nsenter_ip(pid, ["link", "set", "lo", "up"]).await,
+            NetworkMode::Nat => configure_dns(settings, runtime, container_id).await,
         }
-        NetworkMode::Nat => configure_nat(settings, pid).await,
+    }
+
+    pub(super) async fn cleanup(self) -> anyhow::Result<()> {
+        cleanup_session().await;
+        Ok(())
     }
 }
 
-async fn configure_nat(settings: &NetworkSettings, pid: i32) -> anyhow::Result<()> {
-    ensure_bridge(settings).await?;
-    ensure_nat_rules(settings).await?;
+pub(super) async fn prepare_network(settings: &NetworkSettings) -> anyhow::Result<NetworkSession> {
+    NetworkSession::prepare(settings).await
+}
 
-    let host_veth = "agentcellv";
-    let _ = run_command("ip", &["link", "del", host_veth]).await;
+pub(super) async fn configure_network(
+    session: &NetworkSession,
+    settings: &NetworkSettings,
+    pid: i32,
+    runtime: &str,
+    container_id: &str,
+) -> anyhow::Result<()> {
+    session
+        .configure(settings, pid, runtime, container_id)
+        .await
+}
+
+/*
+ * Keep the old free-function cleanup entry point for startup recovery and
+ * maintenance of a stale session left by an interrupted process.
+ */
+async fn prepare_nat(settings: &NetworkSettings) -> anyhow::Result<()> {
     run_checked(
         "ip",
-        &[
-            "link", "add", host_veth, "type", "veth", "peer", "name", "eth0",
-        ],
-        "create sandbox veth pair",
+        &["netns", "add", NETNS_NAME],
+        "create sandbox network namespace",
     )
     .await?;
-    if let Err(error) = configure_veth(settings, pid, host_veth).await {
-        let _ = run_command("ip", &["link", "del", host_veth]).await;
+    let result = async {
+        run_checked(
+            "ip",
+            &[
+                "link", "add", HOST_VETH, "type", "veth", "peer", "name", "eth0",
+            ],
+            "create sandbox veth pair",
+        )
+        .await?;
+        configure_veth(settings).await
+    }
+    .await;
+    if let Err(error) = result {
+        cleanup_session().await;
         return Err(error);
     }
     Ok(())
 }
 
 pub(super) async fn cleanup_session() {
-    match run_command("ip", &["link", "del", "agentcellv"]).await {
+    match run_command("ip", &["link", "del", HOST_VETH]).await {
         Ok(output) if output.status.success() => {
             info!("removed sandbox host veth");
         }
@@ -51,6 +110,17 @@ pub(super) async fn cleanup_session() {
         }
         Err(error) => {
             warn!(error = %error, "could not inspect sandbox host veth");
+        }
+    }
+    match run_command("ip", &["netns", "del", NETNS_NAME]).await {
+        Ok(output) if output.status.success() => {
+            info!("removed sandbox network namespace");
+        }
+        Ok(_) => {
+            debug!("sandbox network namespace was already absent");
+        }
+        Err(error) => {
+            warn!(error = %error, "could not inspect sandbox network namespace");
         }
     }
 }
@@ -162,57 +232,54 @@ async fn ensure_iptables_rule(table: &str, chain: &str, rule: Vec<String>) -> an
     run_checked("iptables", &insert, "install sandbox NAT firewall rule").await
 }
 
-async fn configure_veth(
-    settings: &NetworkSettings,
-    pid: i32,
-    host_veth: &str,
-) -> anyhow::Result<()> {
+async fn configure_veth(settings: &NetworkSettings) -> anyhow::Result<()> {
     run_checked(
         "ip",
-        &["link", "set", host_veth, "master", &settings.bridge],
+        &["link", "set", HOST_VETH, "master", &settings.bridge],
         "attach sandbox veth to bridge",
     )
     .await?;
     run_checked(
         "ip",
-        &["link", "set", host_veth, "up"],
+        &["link", "set", HOST_VETH, "up"],
         "activate sandbox host veth",
     )
     .await?;
     run_checked(
         "ip",
-        &["link", "set", "eth0", "netns", &pid.to_string()],
+        &["link", "set", "eth0", "netns", NETNS_NAME],
         "move sandbox veth into network namespace",
     )
     .await?;
 
-    nsenter_ip(pid, ["link", "set", "lo", "up"]).await?;
-    nsenter_ip(
-        pid,
-        [
-            "addr",
-            "replace",
-            &settings.subnet.address_with_prefix(settings.address),
-            "dev",
-            "eth0",
-        ],
-    )
+    netns_ip(["link", "set", "lo", "up"]).await?;
+    netns_ip([
+        "addr",
+        "replace",
+        &settings.subnet.address_with_prefix(settings.address),
+        "dev",
+        "eth0",
+    ])
     .await?;
-    nsenter_ip(pid, ["link", "set", "eth0", "up"]).await?;
-    nsenter_ip(
-        pid,
-        [
-            "route",
-            "replace",
-            "default",
-            "via",
-            &settings.gateway.to_string(),
-            "dev",
-            "eth0",
-        ],
-    )
+    netns_ip(["link", "set", "eth0", "up"]).await?;
+    netns_ip([
+        "route",
+        "replace",
+        "default",
+        "via",
+        &settings.gateway.to_string(),
+        "dev",
+        "eth0",
+    ])
     .await?;
+    Ok(())
+}
 
+async fn configure_dns(
+    settings: &NetworkSettings,
+    runtime: &str,
+    container_id: &str,
+) -> anyhow::Result<()> {
     if !settings.dns.is_empty() {
         let lines = settings
             .dns
@@ -221,13 +288,14 @@ async fn configure_veth(
             .collect::<Vec<_>>()
             .join(" ");
         let script = format!("printf '%s\\n' {lines} > /etc/resolv.conf");
+        // runsc's mount namespace is intentionally empty: the container rootfs
+        // is served by its gofer process and is not available to host-side
+        // nsenter. Execute the write inside the container instead.
         run_checked(
-            "nsenter",
+            runtime,
             &[
-                "-t".into(),
-                pid.to_string(),
-                "-m".into(),
-                "-n".into(),
+                "exec".into(),
+                container_id.to_owned(),
                 "/bin/sh".into(),
                 "-c".into(),
                 script,
@@ -237,6 +305,17 @@ async fn configure_veth(
         .await?;
     }
     Ok(())
+}
+
+async fn netns_ip<const N: usize>(args: [&str; N]) -> anyhow::Result<()> {
+    let mut command_args = vec![
+        "netns".into(),
+        "exec".into(),
+        NETNS_NAME.into(),
+        "ip".into(),
+    ];
+    command_args.extend(args.into_iter().map(str::to_owned));
+    run_checked("ip", &command_args, "configure sandbox network namespace").await
 }
 
 async fn nsenter_ip<const N: usize>(pid: i32, args: [&str; N]) -> anyhow::Result<()> {

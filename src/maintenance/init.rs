@@ -1,18 +1,11 @@
-use crate::config;
-use anyhow::{bail, ensure, Context};
-use flate2::read::GzDecoder;
+use super::init_support::{
+    alpine_architecture, extract_archive, generated_config, latest_artifact_from_index,
+    parse_checksum, validate_version, verify_sha256, write_config_if_missing,
+};
+use anyhow::{bail, Context};
 use futures_util::StreamExt;
 use reqwest::Client;
-use serde::Serialize;
-use sha2::{Digest, Sha256};
-use std::{
-    cmp::Ordering,
-    fs,
-    io::{self, Read, Write},
-    path::{Component, Path},
-    time::Duration,
-};
-use tar::Archive;
+use std::{fs, io, path::Path, time::Duration};
 use tokio::{fs as async_fs, io::AsyncWriteExt};
 use uuid::Uuid;
 
@@ -158,7 +151,7 @@ async fn run_in(
         let version = repository
             .download_and_extract(&staging, requested_version)
             .await?;
-        config::prepare_sysroot(&staging, Some(&workspace))
+        super::sysroot::prepare_sysroot(&staging, Some(&workspace))
             .with_context(|| format!("prepare Alpine sysroot {}", staging.display()))?;
         fs::rename(&staging, &rootfs)
             .with_context(|| format!("install sysroot {}", rootfs.display()))?;
@@ -188,217 +181,16 @@ async fn run_in(
     Ok(())
 }
 
-fn alpine_architecture() -> anyhow::Result<&'static str> {
-    match std::env::consts::ARCH {
-        "x86_64" => Ok("x86_64"),
-        "x86" => Ok("x86"),
-        "aarch64" => Ok("aarch64"),
-        "arm" => Ok("armv7"),
-        "riscv64" => Ok("riscv64"),
-        "s390x" => Ok("s390x"),
-        "powerpc64le" => Ok("ppc64le"),
-        "loongarch64" => Ok("loongarch64"),
-        architecture => bail!(
-            "unsupported host architecture {architecture}; Alpine init has no matching minirootfs"
-        ),
-    }
-}
-
-fn validate_version(version: &str) -> anyhow::Result<()> {
-    ensure!(
-        !version.is_empty()
-            && version
-                .split('.')
-                .all(|part| !part.is_empty()
-                    && part.chars().all(|character| character.is_ascii_digit())),
-        "invalid Alpine version {version:?}; expected a stable version such as 3.24.1"
-    );
-    Ok(())
-}
-
-fn latest_artifact_from_index(index: &str, architecture: &str) -> anyhow::Result<(String, String)> {
-    let suffix = format!("-{architecture}.tar.gz");
-    let mut candidates = index
-        .split(|character: char| character.is_whitespace() || character == '"' || character == '\'')
-        .filter_map(|token| {
-            let version = token
-                .strip_prefix("alpine-minirootfs-")?
-                .strip_suffix(&suffix)?;
-            if validate_version(version).is_err() {
-                return None;
-            }
-            Some((version.to_owned(), token.to_owned()))
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| compare_versions(&left.0, &right.0));
-    candidates.pop().ok_or_else(|| {
-        anyhow::anyhow!("Alpine release index contains no stable minirootfs for {architecture}")
-    })
-}
-
-fn compare_versions(left: &str, right: &str) -> Ordering {
-    let left = left
-        .split('.')
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect::<Vec<_>>();
-    let right = right
-        .split('.')
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect::<Vec<_>>();
-    (0..left.len().max(right.len()))
-        .map(|index| {
-            (
-                left.get(index).copied().unwrap_or(0),
-                right.get(index).copied().unwrap_or(0),
-            )
-        })
-        .find_map(|(left, right)| match left.cmp(&right) {
-            Ordering::Equal => None,
-            ordering => Some(ordering),
-        })
-        .unwrap_or(Ordering::Equal)
-}
-
-fn parse_checksum(content: &str) -> anyhow::Result<String> {
-    let checksum = content
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("checksum file is empty"))?;
-    ensure!(
-        checksum.len() == 64
-            && checksum
-                .chars()
-                .all(|character| character.is_ascii_hexdigit()),
-        "checksum file does not contain a SHA256 digest"
-    );
-    Ok(checksum.to_ascii_lowercase())
-}
-
-fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
-    let mut file = fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let length = file.read(&mut buffer)?;
-        if length == 0 {
-            break;
-        }
-        digest.update(&buffer[..length]);
-    }
-    let actual = format!("{:x}", digest.finalize());
-    ensure!(
-        actual == expected,
-        "SHA256 mismatch: expected {expected}, got {actual}"
-    );
-    Ok(())
-}
-
-fn extract_archive(archive_path: &Path, destination: &Path) -> anyhow::Result<()> {
-    let archive = fs::File::open(archive_path)?;
-    let decoder = GzDecoder::new(archive);
-    let mut archive = Archive::new(decoder);
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.into_owned();
-        validate_archive_path(&path)?;
-        entry.unpack_in(destination)?;
-    }
-    Ok(())
-}
-
-fn validate_archive_path(path: &Path) -> anyhow::Result<()> {
-    ensure!(
-        !path.is_absolute(),
-        "archive contains absolute path {}",
-        path.display()
-    );
-    ensure!(
-        !path
-            .components()
-            .any(|component| matches!(component, Component::ParentDir)),
-        "archive contains path traversal {}",
-        path.display()
-    );
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct GeneratedConfig {
-    api: GeneratedApiConfig,
-    sandbox: GeneratedSandboxConfig,
-}
-
-#[derive(Serialize)]
-struct GeneratedApiConfig {
-    listen_addr: String,
-    secret: String,
-}
-
-#[derive(Serialize)]
-struct GeneratedSandboxConfig {
-    rootfs_dir: String,
-    workspace_dir: String,
-    backend: String,
-    max_timeout_seconds: u64,
-    network_mode: String,
-    network_bridge: String,
-    network_subnet: String,
-    network_gateway: String,
-    network_ip: String,
-    network_dns: Vec<String>,
-}
-
-fn generated_config(rootfs: &Path, workspace: &Path) -> anyhow::Result<String> {
-    let config = GeneratedConfig {
-        api: GeneratedApiConfig {
-            listen_addr: "0.0.0.0:8080".into(),
-            secret: Uuid::new_v4().as_simple().to_string(),
-        },
-        sandbox: GeneratedSandboxConfig {
-            rootfs_dir: rootfs.to_string_lossy().into_owned(),
-            workspace_dir: workspace.to_string_lossy().into_owned(),
-            backend: "runsc".into(),
-            max_timeout_seconds: 300,
-            network_mode: "nat".into(),
-            network_bridge: "agentcell0".into(),
-            network_subnet: "10.200.0.0/24".into(),
-            network_gateway: "10.200.0.1".into(),
-            network_ip: "10.200.0.2".into(),
-            network_dns: vec!["1.1.1.1".into(), "8.8.8.8".into()],
-        },
-    };
-    Ok(format!("{}\n", toml::to_string_pretty(&config)?))
-}
-
-fn write_config_if_missing(path: &Path, content: &str) -> anyhow::Result<bool> {
-    let Some(parent) = path.parent() else {
-        bail!("configuration path has no parent: {}", path.display());
-    };
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create configuration directory {}", parent.display()))?;
-    let mut file = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
-        Err(error) => {
-            return Err(error).with_context(|| format!("create config {}", path.display()))
-        }
-    };
-    if let Err(error) = file.write_all(content.as_bytes()) {
-        let _ = fs::remove_file(path);
-        return Err(error).with_context(|| format!("write config {}", path.display()));
-    }
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::init_support::validate_archive_path;
     use super::*;
     use axum::{body::Body, extract::State, http::Uri, response::Response, routing::get, Router};
-    use std::sync::Arc;
+    use sha2::{Digest, Sha256};
+    use std::{
+        io::Write,
+        sync::{Arc, OnceLock},
+    };
     use tempfile::tempdir;
     use tokio::net::TcpListener;
 
@@ -426,8 +218,9 @@ mod tests {
         assert!(validate_archive_path(Path::new("bin/sh")).is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn init_downloads_verifies_extracts_and_generates_config() {
+        let _guard = init_test_lock().lock().await;
         let temp = tempdir().unwrap();
         let archive = test_archive();
         let checksum = format!(
@@ -448,11 +241,11 @@ mod tests {
         let config = crate::config::Config::load(&config_path).unwrap();
         assert!(config_path.is_file());
         assert!(config.sandbox.rootfs_dir.join("bin/sh").is_file());
-        assert!(crate::config::sysroot_issues(&config.sandbox).is_empty());
+        assert!(super::super::sysroot::sysroot_issues(&config.sandbox).is_empty());
         assert!(!config.api.secret.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn init_does_not_overwrite_existing_sysroot_or_config() {
         let temp = tempdir().unwrap();
         let rootfs = temp.path().join("sysroot");
@@ -471,8 +264,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn checksum_failure_leaves_no_sysroot_or_staging_directory() {
+        let _guard = init_test_lock().lock().await;
         let temp = tempdir().unwrap();
         let archive = test_archive();
         let checksum = format!("{}  archive.tar.gz\n", "0".repeat(64));
@@ -528,6 +322,11 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         (format!("http://{address}/alpine/latest-stable"), task)
+    }
+
+    fn init_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     fn test_archive() -> Vec<u8> {

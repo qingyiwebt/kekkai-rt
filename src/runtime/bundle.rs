@@ -1,14 +1,63 @@
 use crate::config::{NetworkMode, NetworkSettings, SandboxConfig};
 use anyhow::Context;
-use serde_json::json;
+use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
+#[derive(Serialize)]
+struct OciSpec {
+    #[serde(rename = "ociVersion")]
+    oci_version: &'static str,
+    process: OciProcess,
+    root: OciRoot,
+    hostname: &'static str,
+    mounts: Vec<OciMount>,
+    linux: OciLinux,
+}
+
+#[derive(Serialize)]
+struct OciProcess {
+    terminal: bool,
+    args: [&'static str; 3],
+    env: [&'static str; 1],
+    cwd: &'static str,
+}
+
+#[derive(Serialize)]
+struct OciRoot {
+    path: String,
+    readonly: bool,
+}
+
+#[derive(Serialize)]
+struct OciMount {
+    destination: &'static str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<Vec<&'static str>>,
+}
+
+#[derive(Serialize)]
+struct OciLinux {
+    namespaces: Vec<OciNamespace>,
+}
+
+#[derive(Serialize)]
+struct OciNamespace {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+}
+
 pub(super) fn prepare_managed_bundle(
     cfg: &SandboxConfig,
     settings: &NetworkSettings,
+    network_namespace_path: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     let bundle_dir = if cfg.managed_bundle_dir.as_os_str().is_empty() {
         cfg.rootfs_dir
@@ -22,54 +71,112 @@ pub(super) fn prepare_managed_bundle(
         .with_context(|| format!("create managed OCI bundle {}", bundle_dir.display()))?;
 
     let config_path = bundle_dir.join("config.json");
-    let root_path = cfg.rootfs_dir.to_string_lossy().into_owned();
-    let mut mounts = vec![
-        json!({"destination":"/proc","type":"proc","source":"proc"}),
-        json!({"destination":"/dev","type":"tmpfs","source":"tmpfs","options":["nosuid","strictatime","mode=755","size=65536k"]}),
-        json!({"destination":"/dev/pts","type":"devpts","source":"devpts","options":["nosuid","noexec","newinstance","ptmxmode=0666","mode=0620","gid=5"]}),
-        json!({"destination":"/dev/shm","type":"tmpfs","source":"shm","options":["nosuid","noexec","nodev","mode=1777","size=65536k"]}),
-        json!({"destination":"/dev/mqueue","type":"mqueue","source":"mqueue","options":["nosuid","noexec","nodev"]}),
-        json!({"destination":"/sys","type":"sysfs","source":"sysfs","options":["nosuid","noexec","nodev","ro"]}),
-        json!({"destination":"/sys/fs/cgroup","type":"cgroup","source":"cgroup","options":["nosuid","noexec","nodev","relatime","ro"]}),
-    ];
+    let mut mounts = standard_mounts();
     if let Some(workspace_dir) = &cfg.workspace_dir {
-        mounts.push(json!({
-            "destination": "/workspace",
-            "type": "bind",
-            "source": workspace_dir.to_string_lossy(),
-            "options": ["rbind", "rw"]
-        }));
+        mounts.push(OciMount {
+            destination: "/workspace",
+            kind: "bind",
+            source: workspace_dir.to_string_lossy().into_owned(),
+            options: Some(vec!["rbind", "rw"]),
+        });
     }
 
-    let mut namespaces = vec![
-        json!({"type":"pid"}),
-        json!({"type":"mount"}),
-        json!({"type":"ipc"}),
-        json!({"type":"uts"}),
-        json!({"type":"cgroup"}),
-    ];
+    let mut namespaces = standard_namespaces();
     if !matches!(settings.mode, NetworkMode::Host) {
-        namespaces.push(json!({"type":"network"}));
+        namespaces.push(OciNamespace {
+            kind: "network",
+            path: network_namespace_path.map(str::to_owned),
+        });
     }
 
-    let spec = json!({
-        "ociVersion": "1.0.2",
-        "process": {
-            "terminal": false,
-            "args": ["/bin/sh", "-c", "while :; do sleep 3600; done"],
-            "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
-            "cwd": "/"
+    let spec = OciSpec {
+        oci_version: "1.0.2",
+        process: OciProcess {
+            terminal: false,
+            args: ["/bin/sh", "-c", "while :; do sleep 3600; done"],
+            env: ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+            cwd: "/",
         },
-        "root": {"path": root_path, "readonly": false},
-        "hostname": "agent-cell",
-        "mounts": mounts,
-        "linux": {"namespaces": namespaces}
-    });
+        root: OciRoot {
+            path: cfg.rootfs_dir.to_string_lossy().into_owned(),
+            readonly: false,
+        },
+        hostname: "agent-cell",
+        mounts,
+        linux: OciLinux { namespaces },
+    };
 
     let serialized = serde_json::to_vec_pretty(&spec).context("serialize managed OCI config")?;
     fs::write(&config_path, serialized)
         .with_context(|| format!("write managed OCI config {}", config_path.display()))?;
     Ok(bundle_dir)
+}
+
+fn standard_mounts() -> Vec<OciMount> {
+    vec![
+        OciMount {
+            destination: "/proc",
+            kind: "proc",
+            source: "proc".into(),
+            options: None,
+        },
+        OciMount {
+            destination: "/dev",
+            kind: "tmpfs",
+            source: "tmpfs".into(),
+            options: Some(vec!["nosuid", "strictatime", "mode=755", "size=65536k"]),
+        },
+        OciMount {
+            destination: "/dev/pts",
+            kind: "devpts",
+            source: "devpts".into(),
+            options: Some(vec![
+                "nosuid",
+                "noexec",
+                "newinstance",
+                "ptmxmode=0666",
+                "mode=0620",
+                "gid=5",
+            ]),
+        },
+        OciMount {
+            destination: "/dev/shm",
+            kind: "tmpfs",
+            source: "shm".into(),
+            options: Some(vec![
+                "nosuid",
+                "noexec",
+                "nodev",
+                "mode=1777",
+                "size=65536k",
+            ]),
+        },
+        OciMount {
+            destination: "/dev/mqueue",
+            kind: "mqueue",
+            source: "mqueue".into(),
+            options: Some(vec!["nosuid", "noexec", "nodev"]),
+        },
+        OciMount {
+            destination: "/sys",
+            kind: "sysfs",
+            source: "sysfs".into(),
+            options: Some(vec!["nosuid", "noexec", "nodev", "ro"]),
+        },
+        OciMount {
+            destination: "/sys/fs/cgroup",
+            kind: "cgroup",
+            source: "cgroup".into(),
+            options: Some(vec!["nosuid", "noexec", "nodev", "relatime", "ro"]),
+        },
+    ]
+}
+
+fn standard_namespaces() -> Vec<OciNamespace> {
+    ["pid", "mount", "ipc", "uts", "cgroup"]
+        .into_iter()
+        .map(|kind| OciNamespace { kind, path: None })
+        .collect()
 }
 
 #[cfg(test)]
@@ -97,7 +204,8 @@ workspace_dir = "."
         cfg.managed_bundle_dir = temp.path().join("bundle");
         let settings = cfg.network_settings().unwrap();
 
-        let bundle = prepare_managed_bundle(&cfg, &settings).unwrap();
+        let bundle =
+            prepare_managed_bundle(&cfg, &settings, Some("/run/netns/agentcellns")).unwrap();
         let spec: Value =
             serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
         assert_eq!(spec["root"]["path"], rootfs.to_string_lossy().as_ref());
@@ -108,10 +216,12 @@ workspace_dir = "."
             spec["mounts"][7]["source"],
             workspace.to_string_lossy().as_ref()
         );
-        assert!(spec["linux"]["namespaces"]
+        let network_namespace = spec["linux"]["namespaces"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|namespace| namespace["type"] == "network"));
+            .find(|namespace| namespace["type"] == "network")
+            .unwrap();
+        assert_eq!(network_namespace["path"], "/run/netns/agentcellns");
     }
 }

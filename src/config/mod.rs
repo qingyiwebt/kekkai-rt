@@ -1,5 +1,5 @@
 mod network;
-mod sysroot;
+mod runtime;
 
 use serde::Deserialize;
 use std::{
@@ -10,7 +10,6 @@ use std::{
 use thiserror::Error;
 
 pub use network::{NetworkMode, NetworkSettings};
-pub(crate) use sysroot::{fix_sysroot, prepare_sysroot, sysroot_issues};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
@@ -128,7 +127,7 @@ impl Config {
         }
         config
             .sandbox
-            .network_settings()
+            .resolved()
             .map_err(ConfigError::InvalidNetwork)?;
         Ok(config)
     }

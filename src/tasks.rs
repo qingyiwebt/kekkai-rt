@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::{broadcast, Notify, RwLock};
+use tokio::{
+    sync::{broadcast, Notify, RwLock},
+    task::JoinHandle,
+};
 use tracing::debug;
 use uuid::Uuid;
 
@@ -21,6 +24,25 @@ pub struct TaskSnapshot {
     pub stdout: String,
     pub stderr: String,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskStatus {
+    Running,
+    Finished,
+    TimedOut,
+    Failed,
+}
+
+impl TaskStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Finished => "finished",
+            Self::TimedOut => "timed_out",
+            Self::Failed => "failed",
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -56,6 +78,7 @@ impl Event {
 }
 struct Task {
     snapshot: TaskSnapshot,
+    status: TaskStatus,
     history: Vec<Event>,
     tx: broadcast::Sender<Event>,
     expires: tokio::time::Instant,
@@ -64,11 +87,17 @@ struct Task {
 pub struct TaskStore {
     inner: Arc<RwLock<HashMap<Uuid, Task>>>,
     active: Arc<ActiveTasks>,
+    cleanup: Arc<CleanupSupervisor>,
 }
 
 struct ActiveTasks {
     count: std::sync::atomic::AtomicUsize,
     idle: Notify,
+}
+
+struct CleanupSupervisor {
+    stop: Notify,
+    handle: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 pub struct TaskLease {
@@ -95,6 +124,43 @@ impl TaskStore {
                 count: std::sync::atomic::AtomicUsize::new(0),
                 idle: Notify::new(),
             }),
+            cleanup: Arc::new(CleanupSupervisor {
+                stop: Notify::new(),
+                handle: std::sync::Mutex::new(None),
+            }),
+        }
+    }
+
+    pub fn start_cleanup(&self) {
+        let Ok(mut handle) = self.cleanup.handle.lock() else {
+            return;
+        };
+        if handle.is_some() {
+            return;
+        }
+        let tasks = self.clone();
+        let stop = self.cleanup.clone();
+        *handle = Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => tasks.cleanup().await,
+                    _ = stop.stop.notified() => break,
+                }
+            }
+        }));
+    }
+
+    pub async fn shutdown_cleanup(&self) {
+        self.cleanup.stop.notify_one();
+        let handle = self
+            .cleanup
+            .handle
+            .lock()
+            .ok()
+            .and_then(|mut handle| handle.take());
+        if let Some(handle) = handle {
+            let _ = handle.await;
         }
     }
     pub async fn create(&self) -> (Uuid, broadcast::Receiver<Event>, TaskLease) {
@@ -103,12 +169,13 @@ impl TaskStore {
         let task = Task {
             snapshot: TaskSnapshot {
                 task_id: id,
-                status: "running".into(),
+                status: TaskStatus::Running.as_str().into(),
                 exit_code: None,
                 stdout: String::new(),
                 stderr: String::new(),
                 error: None,
             },
+            status: TaskStatus::Running,
             history: Vec::new(),
             tx,
             expires: tokio::time::Instant::now() + Duration::from_secs(300),
@@ -117,7 +184,13 @@ impl TaskStore {
         self.active
             .count
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        (id, rx, TaskLease { active: self.active.clone() })
+        (
+            id,
+            rx,
+            TaskLease {
+                active: self.active.clone(),
+            },
+        )
     }
     pub async fn publish(&self, id: Uuid, event: Event) {
         if let Some(t) = self.inner.write().await.get_mut(&id) {
@@ -126,16 +199,19 @@ impl TaskStore {
                 Event::Stdout(s) => t.snapshot.stdout.push_str(s),
                 Event::Stderr(s) => t.snapshot.stderr.push_str(s),
                 Event::Finished(c) => {
-                    t.snapshot.status = "finished".into();
+                    t.status = TaskStatus::Finished;
+                    t.snapshot.status = t.status.as_str().into();
                     t.snapshot.exit_code = *c;
                     t.expires = tokio::time::Instant::now() + Duration::from_secs(300);
                 }
                 Event::TimedOut => {
-                    t.snapshot.status = "timed_out".into();
+                    t.status = TaskStatus::TimedOut;
+                    t.snapshot.status = t.status.as_str().into();
                     t.expires = tokio::time::Instant::now() + Duration::from_secs(300);
                 }
                 Event::Failed(e) => {
-                    t.snapshot.status = "failed".into();
+                    t.status = TaskStatus::Failed;
+                    t.snapshot.status = t.status.as_str().into();
                     t.snapshot.error = Some(e.clone());
                     t.expires = tokio::time::Instant::now() + Duration::from_secs(300);
                 }
@@ -162,21 +238,11 @@ impl TaskStore {
 
     pub async fn wait_for_idle(&self) {
         loop {
-            if self
-                .active
-                .count
-                .load(std::sync::atomic::Ordering::Acquire)
-                == 0
-            {
+            if self.active.count.load(std::sync::atomic::Ordering::Acquire) == 0 {
                 return;
             }
             let notified = self.active.idle.notified();
-            if self
-                .active
-                .count
-                .load(std::sync::atomic::Ordering::Acquire)
-                == 0
-            {
+            if self.active.count.load(std::sync::atomic::Ordering::Acquire) == 0 {
                 return;
             }
             notified.await;
@@ -218,5 +284,13 @@ mod tests {
         assert!(!waiting.is_finished());
         drop(lease);
         waiting.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cleanup_supervisor_can_stop_without_waiting_for_interval() {
+        let store = TaskStore::new();
+        store.start_cleanup();
+        store.shutdown_cleanup().await;
+        store.shutdown_cleanup().await;
     }
 }

@@ -1,17 +1,15 @@
 mod bundle;
 mod container;
 mod network;
+mod process;
+mod session;
 
 use crate::{config::SandboxConfig, tasks::ExecRequest};
 use anyhow::{anyhow, bail, Context};
-use std::{process::Stdio, sync::Arc, time::Duration};
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::{Child, Command},
-    sync::Mutex,
-    time::{sleep, timeout, Instant},
-};
+use process::RuntimeClient;
+use session::ContainerSession;
+use std::{sync::Arc, time::Duration};
+use tokio::time::{sleep, timeout, Instant};
 use tracing::{debug, info, warn};
 
 const CONTAINER_ID: &str = "agent-cell";
@@ -19,28 +17,14 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 pub struct Sandbox {
-    runtime: String,
-    container_id: String,
     session: Option<Arc<ContainerSession>>,
 }
 
-struct ContainerSession {
-    runtime: String,
-    container_id: String,
-    child: Mutex<Option<Child>>,
-    stopped: AtomicBool,
-}
-
-pub struct RunningExec {
-    pub child: Child,
-    pub stdin: Option<tokio::process::ChildStdin>,
-    pub stdout: Option<tokio::process::ChildStdout>,
-    pub stderr: Option<tokio::process::ChildStderr>,
-}
+pub use process::RunningExec;
 
 impl Sandbox {
     pub async fn start(cfg: &SandboxConfig) -> anyhow::Result<Self> {
-        let sysroot_issues = crate::config::sysroot_issues(cfg);
+        let sysroot_issues = crate::maintenance::sysroot::sysroot_issues(cfg);
         if !sysroot_issues.is_empty() {
             let details = sysroot_issues
                 .iter()
@@ -52,48 +36,66 @@ impl Sandbox {
             );
         }
 
-        let settings = cfg
-            .network_settings()
-            .map_err(|error| anyhow!("invalid sandbox network configuration: {error}"))?;
-        let runtime = cfg.backend.clone();
-        Self::probe_program(&runtime).await.with_context(|| {
-            format!("runtime {runtime} is not installed; install it before starting AgentCell")
-        })?;
+        let resolved = cfg
+            .resolved()
+            .map_err(|error| anyhow!("invalid sandbox configuration: {error}"))?;
+        let settings = &resolved.network;
+        let runtime = RuntimeClient::new(&resolved.backend, CONTAINER_ID);
+        Self::probe_program(runtime.program())
+            .await
+            .with_context(|| {
+                format!(
+                    "runtime {} is not installed; install it before starting AgentCell",
+                    runtime.program()
+                )
+            })?;
 
-        let bundle_dir = bundle::prepare_managed_bundle(cfg, &settings)?;
-        let container_id = CONTAINER_ID.to_string();
-        container::remove(&runtime, &container_id).await?;
-        network::cleanup_session().await;
+        runtime.remove().await?;
+        let network = network::prepare_network(settings)
+            .await
+            .context("prepare sandbox network")?;
+        let bundle_dir =
+            match bundle::prepare_managed_bundle(cfg, settings, network.namespace_path()) {
+                Ok(path) => path,
+                Err(error) => {
+                    let _ = network.cleanup().await;
+                    return Err(error);
+                }
+            };
 
         info!(
-            runtime = %runtime,
-            container_id = %container_id,
+            runtime = %runtime.program(),
+            container_id = %runtime.container_id(),
             bundle = %bundle_dir.display(),
             network_mode = %settings.mode.as_str(),
             "starting sandbox container"
         );
 
-        let child = spawn_runtime(&runtime, &bundle_dir, &container_id)?;
-        let session = Arc::new(ContainerSession {
-            runtime: runtime.clone(),
-            container_id: container_id.clone(),
-            child: Mutex::new(Some(child)),
-            stopped: AtomicBool::new(false),
-        });
+        let child = match runtime.spawn_container(&bundle_dir) {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = network.cleanup().await;
+                return Err(error);
+            }
+        };
+        let session = Arc::new(ContainerSession::new(runtime, child, network));
         let sandbox = Self {
-            runtime,
-            container_id,
             session: Some(session),
         };
 
         let startup = async {
             let state = sandbox.wait_until_running().await?;
-            network::configure_network(&settings, state.pid)
+            let session = sandbox
+                .session
+                .as_ref()
+                .expect("running sandbox has a container session");
+            session
+                .configure_network(settings, state.pid)
                 .await
                 .context("configure sandbox network")?;
             info!(
-                runtime = %sandbox.runtime,
-                container_id = %sandbox.container_id,
+                runtime = %session.runtime.program(),
+                container_id = %session.runtime.container_id(),
                 pid = state.pid,
                 "sandbox container is ready"
             );
@@ -114,43 +116,45 @@ impl Sandbox {
     }
 
     async fn wait_until_running(&self) -> anyhow::Result<container::RuncState> {
+        let session = self
+            .session
+            .as_ref()
+            .expect("running sandbox has a container session");
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         loop {
-            if let Some(state) = container::read_state(&self.runtime, &self.container_id).await? {
+            if let Some(state) = session.runtime.state().await? {
                 return Ok(state);
             }
 
-            let runtime_exit = {
-                let mut child = self
-                    .session
-                    .as_ref()
-                    .expect("running sandbox has a container session")
-                    .child
-                    .lock()
-                    .await;
-                child
-                    .as_mut()
-                    .expect("running sandbox owns its runtime child")
-                    .try_wait()?
-            };
-            if let Some(status) = runtime_exit {
-                container::log_runtime_exit(&self.runtime, &self.container_id, status);
-                bail!(
-                    "runtime {} exited before container {} became ready",
-                    self.runtime,
-                    self.container_id
-                );
+            {
+                let mut child = session.child.lock().await;
+                if let Some(child) = child.as_mut() {
+                    if let Some(status) = child.try_wait()? {
+                        container::log_runtime_exit(
+                            session.runtime.program(),
+                            session.runtime.container_id(),
+                            status,
+                        );
+                        bail!(
+                            "runtime {} exited before container {} became ready",
+                            session.runtime.program(),
+                            session.runtime.container_id()
+                        );
+                    }
+                } else {
+                    bail!("sandbox runtime exited before the container became ready");
+                }
             }
             if Instant::now() >= deadline {
                 bail!(
                     "container {} did not become ready within {} seconds",
-                    self.container_id,
+                    session.runtime.container_id(),
                     STARTUP_TIMEOUT.as_secs()
                 );
             }
             debug!(
-                runtime = %self.runtime,
-                container_id = %self.container_id,
+                runtime = %session.runtime.program(),
+                container_id = %session.runtime.container_id(),
                 "waiting for sandbox container state"
             );
             sleep(STATE_POLL_INTERVAL).await;
@@ -165,152 +169,21 @@ impl Sandbox {
     }
 
     pub(crate) async fn probe_program(program: &str) -> anyhow::Result<()> {
-        let output = Command::new(program)
-            .arg("--version")
-            .output()
-            .await
-            .with_context(|| format!("execute {program} --version"))?;
-        if !output.status.success() {
-            bail!(
-                "{program} failed --version: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        debug!(program, "dependency probe succeeded");
-        Ok(())
+        RuntimeClient::probe(program).await
     }
 
     pub async fn exec(&self, req: &ExecRequest) -> anyhow::Result<RunningExec> {
-        if req.argv.is_empty() {
-            return Err(anyhow!("argv must not be empty"));
-        }
-        let mut cmd = Command::new(&self.runtime);
-        cmd.arg("exec");
-        if let Some(cwd) = &req.cwd {
-            cmd.args(["--cwd", cwd]);
-        }
-        for (key, value) in &req.env {
-            cmd.arg("--env").arg(format!("{key}={value}"));
-        }
-        cmd.arg(&self.container_id);
-        cmd.args(&req.argv)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        debug!(
-            runtime = %self.runtime,
-            container_id = %self.container_id,
-            program = %req.argv.first().map(String::as_str).unwrap_or(""),
-            argc = req.argv.len(),
-            "starting sandbox exec"
-        );
-        let mut child = cmd.spawn().context("spawn runtime exec")?;
-        Ok(RunningExec {
-            stdin: child.stdin.take(),
-            stdout: child.stdout.take(),
-            stderr: child.stderr.take(),
-            child,
-        })
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| anyhow!("sandbox is not running"))?;
+        session.runtime.exec(req).await
     }
 
     #[cfg(test)]
     pub(crate) fn test_instance() -> Self {
-        Self {
-            runtime: "test-runtime".into(),
-            container_id: "test-container".into(),
-            session: None,
-        }
+        Self { session: None }
     }
-}
-
-impl ContainerSession {
-    async fn shutdown(&self) -> anyhow::Result<()> {
-        if self.stopped.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
-        let mut errors = Vec::new();
-        info!(
-            runtime = %self.runtime,
-            container_id = %self.container_id,
-            "stopping sandbox container"
-        );
-
-        if let Some(mut child) = self.child.lock().await.take() {
-            match child.try_wait() {
-                Ok(None) => {
-                    if let Err(error) = child.kill().await {
-                        errors.push(anyhow!(error).context("kill foreground runtime"));
-                    }
-                }
-                Ok(Some(status)) => {
-                    container::log_runtime_exit(&self.runtime, &self.container_id, status);
-                }
-                Err(error) => errors.push(anyhow!(error).context("inspect foreground runtime")),
-            }
-            if let Err(error) = child.wait().await {
-                errors.push(anyhow!(error).context("wait for foreground runtime"));
-            }
-        }
-
-        if let Err(error) = container::remove(&self.runtime, &self.container_id).await {
-            errors.push(error.context("remove sandbox container"));
-        }
-        network::cleanup_session().await;
-
-        if errors.is_empty() {
-            info!(
-                runtime = %self.runtime,
-                container_id = %self.container_id,
-                "sandbox container stopped"
-            );
-            Ok(())
-        } else {
-            Err(anyhow!("sandbox shutdown failed: {}", format_errors(errors)))
-        }
-    }
-}
-
-fn spawn_runtime(runtime: &str, bundle_dir: &std::path::Path, container_id: &str) -> anyhow::Result<Child> {
-    let mut command = Command::new(runtime);
-    command
-        .args([
-            "run",
-            "--bundle",
-            bundle_dir.to_string_lossy().as_ref(),
-            container_id,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    container::configure_parent_death_signal(&mut command);
-    let mut child = command.spawn().context("spawn foreground runtime")?;
-    if let Some(stderr) = child.stderr.take() {
-        let runtime = runtime.to_owned();
-        let container_id = container_id.to_owned();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => debug!(%runtime, %container_id, %line, "runtime stderr"),
-                    Ok(None) => break,
-                    Err(error) => {
-                        warn!(%runtime, %container_id, error = %error, "read runtime stderr");
-                        break;
-                    }
-                }
-            }
-        });
-    }
-    Ok(child)
-}
-
-fn format_errors(errors: Vec<anyhow::Error>) -> String {
-    errors
-        .into_iter()
-        .map(|error| error.to_string())
-        .collect::<Vec<_>>()
-        .join("; ")
 }
 
 #[cfg(test)]
@@ -380,7 +253,7 @@ esac
             let rootfs = root.join("rootfs");
             fs::create_dir_all(rootfs.join("bin")).unwrap();
             fs::write(rootfs.join("bin/sh"), b"shell").unwrap();
-            crate::config::prepare_sysroot(&rootfs, None).unwrap();
+            crate::maintenance::sysroot::prepare_sysroot(&rootfs, None).unwrap();
             let mut config: SandboxConfig = toml::from_str("rootfs_dir = \".\"").unwrap();
             config.rootfs_dir = rootfs;
             config.backend = self.executable.to_string_lossy().into_owned();
@@ -411,8 +284,16 @@ esac
         let lines = fake.log_lines();
         let run = lines.iter().find(|line| line.starts_with("run ")).unwrap();
         assert!(!run.contains("--detach"));
-        assert!(lines.iter().position(|line| line.starts_with("delete ")).unwrap()
-            < lines.iter().position(|line| line.starts_with("run ")).unwrap());
+        assert!(
+            lines
+                .iter()
+                .position(|line| line.starts_with("delete "))
+                .unwrap()
+                < lines
+                    .iter()
+                    .position(|line| line.starts_with("run "))
+                    .unwrap()
+        );
 
         let mut env = std::collections::HashMap::new();
         env.insert("FOO".into(), "bar".into());
@@ -424,7 +305,13 @@ esac
             timeout_seconds: None,
         };
         let running = sandbox.exec(&request).await.unwrap();
-        assert!(running.child.wait_with_output().await.unwrap().status.success());
+        assert!(running
+            .child
+            .wait_with_output()
+            .await
+            .unwrap()
+            .status
+            .success());
         let exec = fake
             .log_lines()
             .into_iter()
@@ -438,7 +325,13 @@ esac
         sandbox.shutdown().await.unwrap();
         sandbox.shutdown().await.unwrap();
         let lines = fake.log_lines();
-        assert_eq!(lines.iter().filter(|line| line.starts_with("delete ")).count(), 2);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("delete "))
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]

@@ -1,13 +1,15 @@
 mod api;
 mod config;
-mod init;
+mod execution;
 mod maintenance;
 mod runtime;
 mod tasks;
+mod workspace;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::Parser;
 use config::Config;
+use maintenance::Command;
 use runtime::Sandbox;
 use std::{path::PathBuf, sync::Arc};
 use tracing::info;
@@ -21,34 +23,13 @@ struct Args {
     command: Option<Command>,
 }
 
-#[derive(Clone, Debug, Subcommand)]
-enum Command {
-    Check,
-    Fix,
-    Init {
-        distribution: Distribution,
-        #[arg(long)]
-        version: Option<String>,
-    },
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-enum Distribution {
-    Alpine,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
     let args = Args::parse();
     match args.command {
         None => run_server(&args.config).await,
-        Some(Command::Check) => maintenance::check(&args.config).await,
-        Some(Command::Fix) => maintenance::fix(&args.config).await,
-        Some(Command::Init {
-            distribution: Distribution::Alpine,
-            version,
-        }) => init::run(&args.config, version.as_deref()).await,
+        Some(command) => maintenance::run(command, &args.config).await,
     }
 }
 
@@ -126,23 +107,26 @@ mod tests {
     #[test]
     fn maintenance_commands_accept_config_before_or_after_subcommand() {
         let before = Args::try_parse_from(["agent-cell", "--config", "one.toml", "check"]).unwrap();
-        assert!(matches!(before.command, Some(Command::Check)));
+        assert!(matches!(before.command, Some(maintenance::Command::Check)));
         assert_eq!(before.config, PathBuf::from("one.toml"));
 
         let after = Args::try_parse_from(["agent-cell", "fix", "--config", "two.toml"]).unwrap();
-        assert!(matches!(after.command, Some(Command::Fix)));
+        assert!(matches!(after.command, Some(maintenance::Command::Fix)));
         assert_eq!(after.config, PathBuf::from("two.toml"));
     }
 
     #[test]
     fn init_takes_distribution_as_a_positional_argument() {
         let args = Args::try_parse_from(["agent-cell", "init", "alpine"]).unwrap();
-        assert!(matches!(args.command, Some(Command::Init { .. })));
+        assert!(matches!(
+            args.command,
+            Some(maintenance::Command::Init { .. })
+        ));
 
         let args =
             Args::try_parse_from(["agent-cell", "init", "alpine", "--version", "3.24.1"]).unwrap();
         assert!(
-            matches!(args.command, Some(Command::Init { version: Some(version), .. }) if version == "3.24.1")
+            matches!(args.command, Some(maintenance::Command::Init { version: Some(version), .. }) if version == "3.24.1")
         );
         assert!(Args::try_parse_from(["agent-cell", "init", "debian"]).is_err());
     }

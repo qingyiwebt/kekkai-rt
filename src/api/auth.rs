@@ -12,14 +12,11 @@ pub(super) async fn check(
     req: Request<Body>,
     next: Next,
 ) -> impl IntoResponse {
-    if req.uri().path() == "/healthz" {
-        return next.run(req).await;
-    }
     let ok = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.strip_prefix("Bearer ").unwrap_or("") == state.config.api.secret)
+        .map(|v| v.strip_prefix("Bearer ").unwrap_or("") == state.auth_secret.as_ref())
         .unwrap_or(false);
     if !ok {
         return StatusCode::UNAUTHORIZED.into_response();

@@ -1,4 +1,4 @@
-use super::SandboxConfig;
+use crate::config::SandboxConfig;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
