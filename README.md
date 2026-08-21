@@ -55,7 +55,7 @@ When at least one tool is configured, AgentCell maps these sockets into the cont
 /run/agentcell-tools-status.socket
 ```
 
-The request socket accepts a length-prefixed binary header followed by streaming stdin. The stdout and stderr sockets return raw bytes for a request id, and the status socket returns the decimal exit code. A shell and Unix-capable `nc` are sufficient for a client; see [TOOLS-PROTOCOL.md](TOOLS-PROTOCOL.md) for the framing and an example.
+The request socket accepts a length-prefixed binary header followed by streaming stdin. The submit connection is the tool's lifetime guard: if it closes before the tool exits, AgentCell terminates the tool process group. The stdout and stderr sockets return raw bytes for a request id, and the status socket returns the decimal exit code. A shell and Unix-capable `nc` are sufficient for a client; see [TOOLS-PROTOCOL.md](TOOLS-PROTOCOL.md) for the framing and an example.
 
 The repository also includes a ready-to-use wrapper, [agentcell-tool-proxy](agentcell-tool-proxy). Copy or symlink it under the configured tool name and make it executable:
 

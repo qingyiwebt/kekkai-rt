@@ -362,6 +362,14 @@ async fn handle_submit(mut stream: UnixStream, state: Arc<ProxyState>) -> anyhow
     for (key, value) in request.environment {
         command.env(key, value);
     }
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -378,27 +386,59 @@ async fn handle_submit(mut stream: UnixStream, state: Arc<ProxyState>) -> anyhow
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let input_task = tokio::spawn(async move {
-        if let Some(mut stdin) = stdin {
-            let _ = tokio::io::copy(&mut stream, &mut stdin).await;
-        }
-    });
     let stdout_task = tokio::spawn(drain_output(stdout, record.stdout.clone()));
     let stderr_task = tokio::spawn(drain_output(stderr, record.stderr.clone()));
     let request_id = request.id.clone();
     let job = tokio::spawn(async move {
-        let code = match child.wait().await {
-            Ok(status) => exit_code(status),
-            Err(error) => {
-                let _ = record
-                    .stderr
-                    .append(format!("failed to wait for tool: {error}\n").as_bytes())
-                    .await;
-                TOOL_START_FAILURE
+        let code = if let Some(mut stdin) = stdin {
+            let mut input = Box::pin(tokio::io::copy(&mut stream, &mut stdin));
+            tokio::select! {
+                status = child.wait() => match status {
+                    Ok(status) => exit_code(status),
+                    Err(error) => {
+                        let _ = record
+                            .stderr
+                            .append(format!("failed to wait for tool: {error}\n").as_bytes())
+                            .await;
+                        TOOL_START_FAILURE
+                    }
+                },
+                input_result = &mut input => {
+                    if let Err(error) = input_result {
+                        let _ = record
+                            .stderr
+                            .append(format!("stdin socket disconnected: {error}\n").as_bytes())
+                            .await;
+                    }
+                    let _ = record
+                        .stderr
+                        .append(b"stdin socket closed; terminating tool\n")
+                        .await;
+                    kill_process_group(&mut child).await;
+                    match child.wait().await {
+                        Ok(status) => exit_code(status),
+                        Err(error) => {
+                            let _ = record
+                                .stderr
+                                .append(format!("failed to wait for terminated tool: {error}\n").as_bytes())
+                                .await;
+                            TOOL_START_FAILURE
+                        }
+                    }
+                }
+            }
+        } else {
+            match child.wait().await {
+                Ok(status) => exit_code(status),
+                Err(error) => {
+                    let _ = record
+                        .stderr
+                        .append(format!("failed to wait for tool: {error}\n").as_bytes())
+                        .await;
+                    TOOL_START_FAILURE
+                }
             }
         };
-        input_task.abort();
-        let _ = input_task.await;
         let _ = stdout_task.await;
         let _ = stderr_task.await;
         record.stdout.finish();
@@ -522,7 +562,7 @@ async fn handle_stream(
 
 async fn handle_status(mut stream: UnixStream, state: Arc<ProxyState>) -> anyhow::Result<()> {
     let id = read_id(&mut stream).await?;
-    let Some(record) = lookup_request(&state, &id).await else {
+    let Some(record) = wait_for_request(&state, &id).await else {
         stream.write_all(b"ERR unknown request\n").await?;
         return Ok(());
     };
@@ -653,6 +693,16 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
         .unwrap_or(TOOL_START_FAILURE)
 }
 
+async fn kill_process_group(child: &mut tokio::process::Child) {
+    let Some(pid) = child.id() else {
+        return;
+    };
+    let killed = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) } == 0;
+    if !killed {
+        let _ = child.kill().await;
+    }
+}
+
 fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -691,7 +741,7 @@ mod tests {
         let script = temp.path().join("tool.sh");
         fs::write(
             &script,
-            "#!/bin/sh\nread input\nprintf 'out:%s' \"$input\"\nprintf 'err:%s' \"$TOOL_SECRET\" >&2\nexit 7\n",
+            "#!/bin/sh\nprintf 'out:hello'\nprintf 'err:%s' \"$TOOL_SECRET\" >&2\nexit 7\n",
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
@@ -713,7 +763,6 @@ mod tests {
         submit.write_all(&0_u32.to_be_bytes()).await.unwrap();
         write_field(&mut submit, b"something-cli").await;
         submit.write_all(b"hello\n").await.unwrap();
-        submit.shutdown().await.unwrap();
 
         let mut stdout = UnixStream::connect(&paths[1]).await.unwrap();
         write_field(&mut stdout, b"request-1").await;
@@ -754,6 +803,43 @@ mod tests {
             load_dotenv(&env).unwrap().get("SECRET"),
             Some(&"two".into())
         );
+    }
+
+    #[tokio::test]
+    async fn disconnecting_submit_socket_terminates_the_tool() {
+        let temp = tempdir().unwrap();
+        let script = temp.path().join("long-tool.sh");
+        fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let env = temp.path().join("tool.env");
+        fs::write(&env, "").unwrap();
+
+        let cfg = config(temp.path());
+        let configured_tools =
+            HashMap::from([("long-tool".into(), ToolConfig { path: script, env })]);
+        let proxy = ToolProxy::start(&cfg, &configured_tools)
+            .await
+            .unwrap()
+            .unwrap();
+        let paths = proxy.socket_paths.clone();
+
+        let mut submit = UnixStream::connect(&paths[0]).await.unwrap();
+        write_field(&mut submit, b"disconnect-1").await;
+        submit.write_all(&0_u32.to_be_bytes()).await.unwrap();
+        submit.write_all(&0_u32.to_be_bytes()).await.unwrap();
+        write_field(&mut submit, b"long-tool").await;
+        drop(submit);
+
+        let mut status = UnixStream::connect(&paths[3]).await.unwrap();
+        write_field(&mut status, b"disconnect-1").await;
+        let mut status_data = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), status.read_to_end(&mut status_data))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(status_data, b"137\n");
+        proxy.shutdown().await.unwrap();
     }
 
     async fn write_field(stream: &mut UnixStream, value: &[u8]) {

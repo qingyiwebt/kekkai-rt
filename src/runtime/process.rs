@@ -75,22 +75,13 @@ impl RuntimeClient {
 
     pub(super) fn spawn_container(&self, bundle_dir: &Path) -> anyhow::Result<Child> {
         let mut command = Command::new(&self.program);
-        if self.allow_host_uds {
-            command.arg("--host-uds=open");
-        }
-        if self.persist_rootfs {
-            // runsc enables a writable rootfs overlay by default. Disable it
-            // so writes go to the configured rootfs directory and survive
-            // container deletion and the next AgentCell startup.
-            command.arg("--overlay2=none");
-        }
         command
-            .args([
-                "run",
-                "--bundle",
-                bundle_dir.to_string_lossy().as_ref(),
+            .args(run_args(
+                self.allow_host_uds,
+                self.persist_rootfs,
+                bundle_dir,
                 &self.container_id,
-            ])
+            ))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -178,6 +169,31 @@ impl RuntimeClient {
     }
 }
 
+fn run_args(
+    allow_host_uds: bool,
+    persist_rootfs: bool,
+    bundle_dir: &Path,
+    container_id: &str,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if allow_host_uds {
+        args.push("--host-uds=open".into());
+    }
+    if persist_rootfs {
+        // runsc enables a writable rootfs overlay by default. Disable it so
+        // writes go to the configured rootfs directory and survive container
+        // deletion and the next AgentCell startup.
+        args.push("--overlay2=none".into());
+    }
+    args.extend([
+        "run".into(),
+        "--bundle".into(),
+        bundle_dir.to_string_lossy().into_owned(),
+        container_id.into(),
+    ]);
+    args
+}
+
 fn probe_args(program: &str) -> &'static [&'static str] {
     if program == "ip" {
         &["-V"]
@@ -188,8 +204,7 @@ fn probe_args(program: &str) -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
-    use super::{probe_args, RuntimeClient};
-    use std::path::Path;
+    use super::{probe_args, run_args, RuntimeClient};
 
     #[test]
     fn uses_iproute2_compatible_version_flag() {
@@ -200,7 +215,20 @@ mod tests {
     #[test]
     fn runsc_disables_temporary_rootfs_overlay() {
         let runtime = RuntimeClient::new("runsc", "agent-cell", false, true);
-        assert!(runtime.persist_rootfs);
-        assert_eq!(Path::new("/bundle").to_string_lossy(), "/bundle");
+        assert_eq!(
+            run_args(
+                runtime.allow_host_uds,
+                runtime.persist_rootfs,
+                std::path::Path::new("/bundle"),
+                &runtime.container_id,
+            ),
+            vec![
+                "--overlay2=none",
+                "run",
+                "--bundle",
+                "/bundle",
+                "agent-cell"
+            ]
+        );
     }
 }
