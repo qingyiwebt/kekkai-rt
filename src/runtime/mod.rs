@@ -4,11 +4,14 @@ mod network;
 mod process;
 mod session;
 
-use crate::{config::SandboxConfig, tasks::ExecRequest};
+use crate::{
+    config::{SandboxConfig, ToolConfig},
+    tasks::ExecRequest,
+};
 use anyhow::{anyhow, bail, Context};
 use process::RuntimeClient;
 use session::ContainerSession;
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::time::{sleep, timeout, Instant};
 use tracing::{debug, info, warn};
 
@@ -23,7 +26,10 @@ pub struct Sandbox {
 pub use process::RunningExec;
 
 impl Sandbox {
-    pub async fn start(cfg: &SandboxConfig) -> anyhow::Result<Self> {
+    pub async fn start(
+        cfg: &SandboxConfig,
+        configured_tools: &HashMap<String, ToolConfig>,
+    ) -> anyhow::Result<Self> {
         let sysroot_issues = crate::maintenance::sysroot::sysroot_issues(cfg);
         if !sysroot_issues.is_empty() {
             let details = sysroot_issues
@@ -54,14 +60,29 @@ impl Sandbox {
         let network = network::prepare_network(settings)
             .await
             .context("prepare sandbox network")?;
-        let bundle_dir =
-            match bundle::prepare_managed_bundle(cfg, settings, network.namespace_path()) {
-                Ok(path) => path,
-                Err(error) => {
-                    let _ = network.cleanup().await;
-                    return Err(error);
+        let tool_proxy = match crate::proxy::ToolProxy::start(cfg, configured_tools).await {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                let _ = network.cleanup().await;
+                return Err(error.context("start tool proxy"));
+            }
+        };
+        let tool_mounts = tool_proxy.as_ref().map(|proxy| proxy.socket_mounts());
+        let bundle_dir = match bundle::prepare_managed_bundle(
+            cfg,
+            settings,
+            network.namespace_path(),
+            tool_mounts.as_deref(),
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                if let Some(proxy) = &tool_proxy {
+                    let _ = proxy.shutdown().await;
                 }
-            };
+                let _ = network.cleanup().await;
+                return Err(error);
+            }
+        };
 
         info!(
             runtime = %runtime.program(),
@@ -74,11 +95,14 @@ impl Sandbox {
         let child = match runtime.spawn_container(&bundle_dir) {
             Ok(child) => child,
             Err(error) => {
+                if let Some(proxy) = &tool_proxy {
+                    let _ = proxy.shutdown().await;
+                }
                 let _ = network.cleanup().await;
                 return Err(error);
             }
         };
-        let session = Arc::new(ContainerSession::new(runtime, child, network));
+        let session = Arc::new(ContainerSession::new(runtime, child, network, tool_proxy));
         let sandbox = Self {
             session: Some(session),
         };
@@ -279,7 +303,9 @@ esac
     async fn foreground_runtime_is_owned_and_cleaned() {
         let temp = tempdir().unwrap();
         let fake = FakeRuntime::new(temp.path());
-        let sandbox = Sandbox::start(&fake.config(temp.path())).await.unwrap();
+        let sandbox = Sandbox::start(&fake.config(temp.path()), &HashMap::new())
+            .await
+            .unwrap();
 
         let lines = fake.log_lines();
         let run = lines.iter().find(|line| line.starts_with("run ")).unwrap();
@@ -295,7 +321,7 @@ esac
                     .unwrap()
         );
 
-        let mut env = std::collections::HashMap::new();
+        let mut env = HashMap::new();
         env.insert("FOO".into(), "bar".into());
         let request = ExecRequest {
             argv: vec!["/bin/echo".into(), "hello".into()],
@@ -340,7 +366,7 @@ esac
         let fake = FakeRuntime::new(temp.path());
         fs::write(&fake.mode, b"exit").unwrap();
 
-        let error = match Sandbox::start(&fake.config(temp.path())).await {
+        let error = match Sandbox::start(&fake.config(temp.path()), &HashMap::new()).await {
             Ok(_) => panic!("sandbox unexpectedly started"),
             Err(error) => error,
         };

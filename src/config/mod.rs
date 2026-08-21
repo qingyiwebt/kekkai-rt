@@ -2,7 +2,9 @@ mod network;
 mod runtime;
 
 use serde::Deserialize;
+use std::os::unix::fs::PermissionsExt;
 use std::{
+    collections::HashMap,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -15,12 +17,20 @@ pub use network::{NetworkMode, NetworkSettings};
 pub struct Config {
     pub api: ApiConfig,
     pub sandbox: SandboxConfig,
+    #[serde(default)]
+    pub tools: HashMap<String, ToolConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ApiConfig {
     pub listen_addr: SocketAddr,
     pub secret: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ToolConfig {
+    pub path: PathBuf,
+    pub env: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -93,6 +103,14 @@ pub enum ConfigError {
     InvalidBackend,
     #[error("sandbox.rootfs_dir does not exist or is not a directory: {0}")]
     MissingRootfs(PathBuf),
+    #[error("tool {name} executable does not exist or is not a regular file: {path}")]
+    InvalidToolPath { name: String, path: PathBuf },
+    #[error("tool {name} executable is not executable: {path}")]
+    ToolNotExecutable { name: String, path: PathBuf },
+    #[error("tool {name} env file does not exist or is not a regular file: {path}")]
+    InvalidToolEnvPath { name: String, path: PathBuf },
+    #[error("tool name must not be empty or contain NUL: {name:?}")]
+    InvalidToolName { name: String },
     #[error("invalid sandbox network configuration: {0}")]
     InvalidNetwork(String),
 }
@@ -121,6 +139,54 @@ impl Config {
             .take()
             .map(|dir| resolve_path(&config_dir, dir));
         config.sandbox.managed_bundle_dir = config_dir.join("bundle");
+
+        for (name, tool) in &mut config.tools {
+            if name.is_empty() || name.contains('\0') {
+                return Err(ConfigError::InvalidToolName { name: name.clone() });
+            }
+            tool.path = resolve_path(&config_dir, tool.path.clone());
+            tool.env = resolve_path(&config_dir, tool.env.clone());
+
+            let metadata = fs::metadata(&tool.path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    ConfigError::InvalidToolPath {
+                        name: name.clone(),
+                        path: tool.path.clone(),
+                    }
+                } else {
+                    ConfigError::Io(error)
+                }
+            })?;
+            if !metadata.is_file() {
+                return Err(ConfigError::InvalidToolPath {
+                    name: name.clone(),
+                    path: tool.path.clone(),
+                });
+            }
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return Err(ConfigError::ToolNotExecutable {
+                    name: name.clone(),
+                    path: tool.path.clone(),
+                });
+            }
+
+            let env_metadata = fs::metadata(&tool.env).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    ConfigError::InvalidToolEnvPath {
+                        name: name.clone(),
+                        path: tool.env.clone(),
+                    }
+                } else {
+                    ConfigError::Io(error)
+                }
+            })?;
+            if !env_metadata.is_file() {
+                return Err(ConfigError::InvalidToolEnvPath {
+                    name: name.clone(),
+                    path: tool.env.clone(),
+                });
+            }
+        }
 
         if !config.sandbox.rootfs_dir.is_dir() {
             return Err(ConfigError::MissingRootfs(config.sandbox.rootfs_dir));
@@ -196,6 +262,46 @@ workspace_dir = "workspace"
         );
         assert_eq!(config.sandbox.managed_bundle_dir, config_dir.join("bundle"));
         assert!(!temp.path().join("workspace").exists());
+        assert!(config.tools.is_empty());
+    }
+
+    #[test]
+    fn load_resolves_and_parses_tools() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("rootfs")).unwrap();
+        let tool = temp.path().join("tool");
+        fs::write(&tool, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(
+            temp.path().join("tool.env"),
+            "# secret\nKEY=VALUE\nQUOTED='hello'\n",
+        )
+        .unwrap();
+        let config_path = temp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[api]
+listen_addr = "127.0.0.1:0"
+secret = "secret"
+
+[sandbox]
+rootfs_dir = "rootfs"
+
+[tools.'something-cli']
+path = "tool"
+env = "tool.env"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        let tool = config.tools.get("something-cli").unwrap();
+        let config_dir = fs::canonicalize(temp.path()).unwrap();
+        assert_eq!(tool.path, config_dir.join("tool"));
+        assert_eq!(tool.env, config_dir.join("tool.env"));
     }
 
     #[test]

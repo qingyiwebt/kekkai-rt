@@ -12,6 +12,7 @@ const MOUNTPOINTS: &[&str] = &[
     "/dev/pts",
     "/dev/shm",
     "/dev/mqueue",
+    "/run",
     "/sys/fs/cgroup",
 ];
 
@@ -184,7 +185,7 @@ mod tests {
         let config = config(rootfs.clone(), Some(workspace.clone()));
 
         let changed = fix_sysroot(&config).unwrap();
-        assert_eq!(changed.len(), 8);
+        assert_eq!(changed.len(), 9);
         assert!(fix_sysroot(&config).unwrap().is_empty());
         assert!(sysroot_issues(&config).is_empty());
         assert_eq!(fs::read(rootfs.join("bin/sh")).unwrap(), b"shell");
@@ -212,7 +213,7 @@ mod tests {
         fs::write(rootfs.join("bin/sh"), b"shell").unwrap();
 
         let changed = fix_sysroot(&config(rootfs.clone(), None)).unwrap();
-        assert_eq!(changed.len(), 7);
+        assert_eq!(changed.len(), 8);
         assert!(!rootfs.join("workspace").exists());
         assert!(sysroot_issues(&config(rootfs, None)).is_empty());
     }

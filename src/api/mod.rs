@@ -72,6 +72,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use http::Request;
+    use std::{collections::HashMap, sync::Arc};
     use tempfile::tempdir;
     use tower::ServiceExt;
 
@@ -88,6 +89,7 @@ rootfs_dir = "."
                 secret: "secret".into(),
             },
             sandbox,
+            tools: HashMap::new(),
         };
         AppState::new(config, Arc::new(Sandbox::test_instance()))
     }
@@ -153,6 +155,7 @@ rootfs_dir = "."
                 secret: "secret".into(),
             },
             sandbox,
+            tools: HashMap::new(),
         };
         let app = router(AppState::new(config, Arc::new(Sandbox::test_instance())));
         let response = app

@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod execution;
 mod maintenance;
+mod proxy;
 mod runtime;
 mod tasks;
 mod workspace;
@@ -36,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_server(config_path: &std::path::Path) -> anyhow::Result<()> {
     let config = Config::load(config_path).context("load configuration")?;
     let sandbox = Arc::new(
-        Sandbox::start(&config.sandbox)
+        Sandbox::start(&config.sandbox, &config.tools)
             .await
             .context("start sandbox")?,
     );
@@ -70,20 +71,12 @@ async fn run_server(config_path: &std::path::Path) -> anyhow::Result<()> {
 }
 
 async fn shutdown() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{signal, SignalKind};
 
-        let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => info!("received Ctrl-C"),
-            _ = terminate.recv() => info!("received SIGTERM"),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-        info!("received shutdown signal");
+    let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => info!("received Ctrl-C"),
+        _ = terminate.recv() => info!("received SIGTERM"),
     }
 }
 

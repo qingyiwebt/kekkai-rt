@@ -287,7 +287,6 @@ mod tests {
         assert!(!temp.path().join("nested").exists());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn service_rejects_symlink_paths_that_escape_the_root() {
         use std::os::unix::fs::symlink;

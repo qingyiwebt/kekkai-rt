@@ -1,4 +1,7 @@
-use crate::config::{NetworkMode, NetworkSettings, SandboxConfig};
+use crate::{
+    config::{NetworkMode, NetworkSettings, SandboxConfig},
+    proxy::ToolSocketMount,
+};
 use anyhow::Context;
 use serde::Serialize;
 use std::{
@@ -58,6 +61,7 @@ pub(super) fn prepare_managed_bundle(
     cfg: &SandboxConfig,
     settings: &NetworkSettings,
     network_namespace_path: Option<&str>,
+    tool_mounts: Option<&[ToolSocketMount]>,
 ) -> anyhow::Result<PathBuf> {
     let bundle_dir = if cfg.managed_bundle_dir.as_os_str().is_empty() {
         cfg.rootfs_dir
@@ -79,6 +83,16 @@ pub(super) fn prepare_managed_bundle(
             source: workspace_dir.to_string_lossy().into_owned(),
             options: Some(vec!["rbind", "rw"]),
         });
+    }
+    if let Some(tool_mounts) = tool_mounts {
+        for mount in tool_mounts {
+            mounts.push(OciMount {
+                destination: mount.destination,
+                kind: "bind",
+                source: mount.source.to_string_lossy().into_owned(),
+                options: Some(vec!["bind"]),
+            });
+        }
     }
 
     let mut namespaces = standard_namespaces();
@@ -205,7 +219,7 @@ workspace_dir = "."
         let settings = cfg.network_settings().unwrap();
 
         let bundle =
-            prepare_managed_bundle(&cfg, &settings, Some("/run/netns/agentcellns")).unwrap();
+            prepare_managed_bundle(&cfg, &settings, Some("/run/netns/agentcellns"), None).unwrap();
         let spec: Value =
             serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
         assert_eq!(spec["root"]["path"], rootfs.to_string_lossy().as_ref());
@@ -223,5 +237,40 @@ workspace_dir = "."
             .find(|namespace| namespace["type"] == "network")
             .unwrap();
         assert_eq!(network_namespace["path"], "/run/netns/agentcellns");
+    }
+
+    #[test]
+    fn generated_config_contains_tool_socket_mounts() {
+        let temp = tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir_all(rootfs.join("bin")).unwrap();
+        fs::write(rootfs.join("bin/sh"), b"placeholder").unwrap();
+        let mut cfg: SandboxConfig = toml::from_str("rootfs_dir = \".\"").unwrap();
+        cfg.rootfs_dir = rootfs;
+        cfg.managed_bundle_dir = temp.path().join("bundle");
+        let settings = cfg.network_settings().unwrap();
+        let mounts = (0..4)
+            .map(|index| ToolSocketMount {
+                source: temp.path().join(format!("socket-{index}")),
+                destination: crate::proxy::SOCKET_DESTINATIONS[index],
+            })
+            .collect::<Vec<_>>();
+
+        let bundle = prepare_managed_bundle(&cfg, &settings, None, Some(&mounts)).unwrap();
+        let spec: Value =
+            serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
+        let tool_mounts = spec["mounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|mount| {
+                mount["destination"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("/run/agentcell-tools")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tool_mounts.len(), 4);
+        assert!(tool_mounts.iter().all(|mount| mount["type"] == "bind"));
     }
 }

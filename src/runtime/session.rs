@@ -1,4 +1,5 @@
 use super::{network::NetworkSession, process::RuntimeClient};
+use crate::proxy::ToolProxy;
 use anyhow::anyhow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::{process::Child, sync::Mutex};
@@ -8,15 +9,22 @@ pub(super) struct ContainerSession {
     pub(super) runtime: RuntimeClient,
     pub(super) child: Mutex<Option<Child>>,
     pub(super) network: Mutex<Option<NetworkSession>>,
+    pub(super) proxy: Option<ToolProxy>,
     stopped: AtomicBool,
 }
 
 impl ContainerSession {
-    pub(super) fn new(runtime: RuntimeClient, child: Child, network: NetworkSession) -> Self {
+    pub(super) fn new(
+        runtime: RuntimeClient,
+        child: Child,
+        network: NetworkSession,
+        proxy: Option<ToolProxy>,
+    ) -> Self {
         Self {
             runtime,
             child: Mutex::new(Some(child)),
             network: Mutex::new(Some(network)),
+            proxy,
             stopped: AtomicBool::new(false),
         }
     }
@@ -60,6 +68,11 @@ impl ContainerSession {
         if let Some(network) = self.network.lock().await.take() {
             if let Err(error) = network.cleanup().await {
                 errors.push(error.context("cleanup sandbox network"));
+            }
+        }
+        if let Some(proxy) = &self.proxy {
+            if let Err(error) = proxy.shutdown().await {
+                errors.push(error.context("cleanup tool proxy"));
             }
         }
 

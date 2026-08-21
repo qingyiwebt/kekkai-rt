@@ -1,0 +1,75 @@
+#!/bin/sh
+
+# Copy or symlink this file to the configured tool name, for example:
+#   cp agentcell-tool-proxy something-cli
+#   chmod +x something-cli
+# The basename becomes the AgentCell [tools.'name'] command key.
+
+LC_ALL=C
+export LC_ALL
+
+submit_socket=/run/agentcell-tools.socket
+stdout_socket=/run/agentcell-tools-stdout.socket
+stderr_socket=/run/agentcell-tools-stderr.socket
+status_socket=/run/agentcell-tools-status.socket
+
+command=${0##*/}
+if [ -z "$command" ]; then
+    echo "agentcell-tool-proxy: unable to determine command name" >&2
+    exit 125
+fi
+
+# Encode one unsigned 32-bit big-endian integer using shell printf octal escapes.
+be32() {
+    n=$1
+    printf '%b' "\\$(printf '%03o' $(( (n >> 24) & 255 )))"
+    printf '%b' "\\$(printf '%03o' $(( (n >> 16) & 255 )))"
+    printf '%b' "\\$(printf '%03o' $(( (n >> 8) & 255 )))"
+    printf '%b' "\\$(printf '%03o' $(( n & 255 )))"
+}
+
+field() {
+    value=$1
+    be32 "${#value}"
+    printf '%s' "$value"
+}
+
+if [ -r /proc/sys/kernel/random/uuid ]; then
+    IFS= read -r request_id < /proc/sys/kernel/random/uuid
+else
+    request_id="${command}-$$-$(date +%s 2>/dev/null)"
+fi
+
+# The submit connection carries the framed header and then all stdin bytes.
+# Closing this process's stdin sends stdin EOF to the host-side tool.
+(
+    field "$request_id"
+    be32 "$#"
+    be32 0
+    field "$command"
+    for argument do
+        field "$argument"
+    done
+    cat
+) | nc -U "$submit_socket" &
+submit_pid=$!
+
+# Output readers may connect before the submit header is registered; the daemon
+# waits briefly for the request id. Keep stdout and stderr independent.
+(field "$request_id" | nc -U "$stdout_socket") &
+stdout_pid=$!
+(field "$request_id" | nc -U "$stderr_socket" >&2) &
+stderr_pid=$!
+
+wait "$submit_pid"
+wait "$stdout_pid"
+wait "$stderr_pid"
+
+exit_code=$(field "$request_id" | nc -U "$status_socket")
+case "$exit_code" in
+    ''|*[!0-9-]*)
+        echo "agentcell-tool-proxy: invalid status response: $exit_code" >&2
+        exit 125
+        ;;
+esac
+exit "$exit_code"

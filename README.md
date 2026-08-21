@@ -32,6 +32,38 @@ For NAT mode, `network_bridge`, `network_subnet`, `network_gateway`, `network_ip
 
 All network fields are validated at startup. The bridge name must be a valid Linux interface name, the gateway and container address must belong to the configured subnet, and DNS entries must be IPv4 addresses. Relative paths are resolved from the directory containing `config.toml`.
 
+## Host-side tool proxy
+
+Tools can be kept outside the sandbox while still being callable from a program inside it:
+
+```toml
+[tools.'something-cli']
+path = "./something-cli"
+env = "./for-something-cli.env"
+```
+
+The executable and env file paths are resolved relative to `config.toml`. The env file uses dotenv-style `KEY=VALUE` lines and is reread for every request, so changes take effect on the next invocation. The host process clears the child environment before adding values from the env file and request-specific overrides.
+
+When at least one tool is configured, AgentCell maps these sockets into the container:
+
+```text
+/run/agentcell-tools.socket
+/run/agentcell-tools-stdout.socket
+/run/agentcell-tools-stderr.socket
+/run/agentcell-tools-status.socket
+```
+
+The request socket accepts a length-prefixed binary header followed by streaming stdin. The stdout and stderr sockets return raw bytes for a request id, and the status socket returns the decimal exit code. A shell and Unix-capable `nc` are sufficient for a client; see [TOOLS-PROTOCOL.md](TOOLS-PROTOCOL.md) for the framing and an example.
+
+The repository also includes a ready-to-use wrapper, [agentcell-tool-proxy](agentcell-tool-proxy). Copy or symlink it under the configured tool name and make it executable:
+
+```sh
+cp agentcell-tool-proxy something-cli
+chmod +x something-cli
+```
+
+Running `something-cli arg1` then selects the `something-cli` entry, forwards the arguments and stdin, mirrors stdout/stderr, and exits with the host tool's status code.
+
 Run with:
 
 ```sh
@@ -57,7 +89,7 @@ agent-cell init alpine
 agent-cell init alpine --version 3.24.1
 ```
 
-The sysroot maintenance commands check or repair `/proc`, `/sys`, `/dev`, `/dev/pts`, `/dev/shm`, `/dev/mqueue`, and `/sys/fs/cgroup`. When `workspace_dir` is configured, they also check or repair the host workspace and the rootfs `/workspace` mountpoint. `fix` only creates missing directories and prepares the host workspace with mode `0777`; it does not install runtimes or modify bridge and iptables state. A normal startup refuses to continue when required sysroot paths are missing and suggests running `agent-cell fix`.
+The sysroot maintenance commands check or repair `/proc`, `/sys`, `/dev`, `/dev/pts`, `/dev/shm`, `/dev/mqueue`, `/run`, and `/sys/fs/cgroup`. When `workspace_dir` is configured, they also check or repair the host workspace and the rootfs `/workspace` mountpoint. `fix` only creates missing directories and prepares the host workspace with mode `0777`; it does not install runtimes or modify bridge and iptables state. A normal startup refuses to continue when required sysroot paths are missing and suggests running `agent-cell fix`.
 
 `agent-cell init alpine` detects the current architecture, downloads the Alpine Mini root filesystem from the official `latest-stable` release directory, verifies its SHA256 checksum, and installs it atomically under `./sysroot`. It also creates `./workspace` and generates `config.toml` when that file does not exist. Existing `sysroot` directories and configuration files are never overwritten.
 

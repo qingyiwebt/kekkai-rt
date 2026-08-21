@@ -13,3 +13,8 @@ network_subnet = "10.200.0.0/24"
 network_gateway = "10.200.0.1"
 network_ip = "10.200.0.2"
 network_dns = ["1.1.1.1", "8.8.8.8"]
+
+# Optional host-side tool proxy. Paths are relative to this config file.
+# [tools.'something-cli']
+# path = "./something-cli"
+# env = "./for-something-cli.env"
