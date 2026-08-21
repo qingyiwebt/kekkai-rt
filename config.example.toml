@@ -3,7 +3,7 @@ listen_addr = "0.0.0.0:8080"
 secret = "replace-me"
 
 [sandbox]
-rootfs_dir = "./alpine"
+rootfs_dir = "./alpine" # writable changes persist across container restarts
 workspace_dir = "./workspace"
 backend = "runsc"
 max_timeout_seconds = 300

@@ -30,6 +30,8 @@ The container belongs to the AgentCell process. AgentCell starts `runc` or `runs
 
 For NAT mode, `network_bridge`, `network_subnet`, `network_gateway`, `network_ip`, and `network_dns` control the managed bridge, container address, default route, and resolver configuration. AgentCell generates the complete OCI `config.json`, including the rootfs, standard system mounts, namespaces, and optional `/workspace` bind mount.
 
+Changes made under the container root filesystem are persistent. For the `runsc` backend, AgentCell disables gVisor's default temporary rootfs overlay so writes go directly to `rootfs_dir` and remain available after the container is stopped and recreated. The `/proc`, `/sys`, `/dev`, `/dev/shm`, and `/sys/fs/cgroup` mounts remain runtime-managed filesystems; use `workspace_dir` for data that should be kept separately from the rootfs.
+
 All network fields are validated at startup. The bridge name must be a valid Linux interface name, the gateway and container address must belong to the configured subnet, and DNS entries must be IPv4 addresses. Relative paths are resolved from the directory containing `config.toml`.
 
 ## Host-side tool proxy

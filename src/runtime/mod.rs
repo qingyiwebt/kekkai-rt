@@ -46,7 +46,12 @@ impl Sandbox {
             .resolved()
             .map_err(|error| anyhow!("invalid sandbox configuration: {error}"))?;
         let settings = &resolved.network;
-        let runtime = RuntimeClient::new(&resolved.backend, CONTAINER_ID);
+        let runtime = RuntimeClient::new(
+            &resolved.backend,
+            CONTAINER_ID,
+            resolved.backend == "runsc" && !configured_tools.is_empty(),
+            resolved.backend == "runsc",
+        );
         Self::probe_program(runtime.program())
             .await
             .with_context(|| {
