@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="KekkaiRuntime.csproj" />
+  <Project Path="tests/KekkaiRuntime.ProtocolTests/KekkaiRuntime.ProtocolTests.csproj" />
+</Solution>

@@ -1,8 +1,8 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
-  AgentCellClient,
-  AgentCellError,
+  KekkaiRuntimeClient,
+  KekkaiRuntimeError,
   type ExecEvent,
 } from "../src/index.js";
 
@@ -47,7 +47,7 @@ function fakeFetch(
 
 test("starts an execution with high-level fields and wire conversion", async () => {
   const { fetch, calls } = fakeFetch(() => jsonResponse({ task_id: "task-1" }, 202));
-  const client = new AgentCellClient({
+  const client = new KekkaiRuntimeClient({
     baseUrl: "http://localhost:8080",
     token: "secret",
     fetch,
@@ -102,7 +102,7 @@ test("runs a task from SSE to the authoritative terminal snapshot", async () => 
       error: null,
     });
   });
-  const client = new AgentCellClient({
+  const client = new KekkaiRuntimeClient({
     baseUrl: "http://localhost:8080/",
     token: "secret",
     fetch,
@@ -163,7 +163,7 @@ test("maps timeout and failure events to terminal results", async () => {
       }
       return jsonResponse(snapshot);
     });
-    const client = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
+    const client = new KekkaiRuntimeClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
     const result = await client.exec.run({ command: "/bin/false" });
 
     assert.equal(result.taskId, snapshot.task_id);
@@ -173,12 +173,12 @@ test("maps timeout and failure events to terminal results", async () => {
 
 test("exposes one typed error for validation, HTTP, protocol, and abort failures", async () => {
   const http = fakeFetch(() => jsonResponse({ error: "not authorized" }, 401));
-  const httpClient = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "bad", fetch: http.fetch });
+  const httpClient = new KekkaiRuntimeClient({ baseUrl: "http://localhost:8080", token: "bad", fetch: http.fetch });
 
   await assert.rejects(
     httpClient.exec.start({ command: "/bin/echo" }),
     (error: unknown) =>
-      error instanceof AgentCellError &&
+      error instanceof KekkaiRuntimeError &&
       error.kind === "http" &&
       error.status === 401 &&
       error.message === "not authorized",
@@ -186,15 +186,15 @@ test("exposes one typed error for validation, HTTP, protocol, and abort failures
 
   await assert.rejects(
     httpClient.exec.start({ command: "" }),
-    (error: unknown) => error instanceof AgentCellError && error.kind === "validation",
+    (error: unknown) => error instanceof KekkaiRuntimeError && error.kind === "validation",
   );
 
   const protocol = fakeFetch(() => jsonResponse({ task_id: "task-3", status: "unknown" }));
-  const protocolClient = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch: protocol.fetch });
+  const protocolClient = new KekkaiRuntimeClient({ baseUrl: "http://localhost:8080", token: "secret", fetch: protocol.fetch });
   const task = await protocolClient.exec.start({ command: "/bin/echo" });
   await assert.rejects(
     task.snapshot(),
-    (error: unknown) => error instanceof AgentCellError && error.kind === "protocol",
+    (error: unknown) => error instanceof KekkaiRuntimeError && error.kind === "protocol",
   );
 
   const controller = new AbortController();
@@ -203,10 +203,10 @@ test("exposes one typed error for validation, HTTP, protocol, and abort failures
     assert.equal(init?.signal, controller.signal);
     throw Object.assign(new Error("aborted"), { name: "AbortError" });
   });
-  const abortedClient = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch: aborted.fetch });
+  const abortedClient = new KekkaiRuntimeClient({ baseUrl: "http://localhost:8080", token: "secret", fetch: aborted.fetch });
   await assert.rejects(
     abortedClient.exec.start({ command: "/bin/echo" }, { signal: controller.signal }),
-    (error: unknown) => error instanceof AgentCellError && error.kind === "aborted",
+    (error: unknown) => error instanceof KekkaiRuntimeError && error.kind === "aborted",
   );
 });
 
@@ -219,7 +219,7 @@ test("passes AbortSignal through to task event streams", async () => {
     }
     return sseResponse([]);
   });
-  const client = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
+  const client = new KekkaiRuntimeClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
   const controller = new AbortController();
   const task = await client.exec.start({ command: "/bin/echo" });
 

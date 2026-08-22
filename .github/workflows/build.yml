@@ -24,8 +24,8 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: proxy/go.mod
-          cache-dependency-path: proxy/go.mod
+          go-version-file: sdks/proxy/go.mod
+          cache-dependency-path: sdks/proxy/go.mod
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -36,7 +36,7 @@ jobs:
         run: cargo test --locked
 
       - name: Test Go proxy
-        working-directory: proxy
+        working-directory: sdks/proxy
         run: |
           go test ./...
           go vet ./...
@@ -45,24 +45,24 @@ jobs:
         run: cargo build --locked --release --target x86_64-unknown-linux-gnu
 
       - name: Build Go proxy
-        working-directory: proxy
+        working-directory: sdks/proxy
         run: |
-          mkdir -p ../dist
+          mkdir -p ../../dist
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -trimpath -ldflags="-s -w" \
-            -o ../dist/agentcell-tool-proxy-x86_64-unknown-linux-gnu .
+            -o ../../dist/kekkai-rt-tool-proxy-x86_64-unknown-linux-gnu .
 
       - name: Prepare artifact
         run: |
           mkdir -p dist
-          cp target/x86_64-unknown-linux-gnu/release/agent-cell dist/agent-cell-x86_64-unknown-linux-gnu
-          sha256sum dist/agent-cell-x86_64-unknown-linux-gnu > dist/agent-cell-x86_64-unknown-linux-gnu.sha256
-          sha256sum dist/agentcell-tool-proxy-x86_64-unknown-linux-gnu > dist/agentcell-tool-proxy-x86_64-unknown-linux-gnu.sha256
+          cp target/x86_64-unknown-linux-gnu/release/kekkai-rt dist/kekkai-rt-x86_64-unknown-linux-gnu
+          sha256sum dist/kekkai-rt-x86_64-unknown-linux-gnu > dist/kekkai-rt-x86_64-unknown-linux-gnu.sha256
+          sha256sum dist/kekkai-rt-tool-proxy-x86_64-unknown-linux-gnu > dist/kekkai-rt-tool-proxy-x86_64-unknown-linux-gnu.sha256
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: agent-cell-x86_64-unknown-linux-gnu
+          name: kekkai-rt-x86_64-unknown-linux-gnu
           path: dist/
           if-no-files-found: error
           retention-days: 30

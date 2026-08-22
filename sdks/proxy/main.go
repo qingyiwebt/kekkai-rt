@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	socketPath = "/run/agentcell-tools.socket"
+	socketPath = "/run/kekkai-rt-tools.socket"
 
 	openFrame    byte = 1
 	stdinFrame   byte = 2
@@ -39,7 +39,7 @@ func run() int {
 
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		return fail("connect to AgentCell: %v", err)
+		return fail("connect to Kekkai Runtime: %v", err)
 	}
 	defer conn.Close()
 
@@ -59,7 +59,7 @@ func run() int {
 }
 
 func fail(format string, args ...any) int {
-	_, _ = fmt.Fprintf(os.Stderr, "agentcell-tool-proxy: "+format+"\n", args...)
+	_, _ = fmt.Fprintf(os.Stderr, "kekkai-rt-tool-proxy: "+format+"\n", args...)
 	return localFailure
 }
 
@@ -119,7 +119,7 @@ func receiveOutput(r io.Reader) (int, error) {
 				return 0, err
 			}
 		case errorFrame:
-			_, _ = fmt.Fprintf(os.Stderr, "agentcell-tool-proxy: %s\n", payload)
+			_, _ = fmt.Fprintf(os.Stderr, "kekkai-rt-tool-proxy: %s\n", payload)
 		case exitFrame:
 			if len(payload) != 4 {
 				return 0, fmt.Errorf("invalid EXIT payload length %d", len(payload))

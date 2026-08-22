@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
-namespace AgentCell;
+namespace KekkaiRuntime;
 
 /// <summary>Request submitted to the sandbox execution API.</summary>
 public sealed class ExecRequest
@@ -32,7 +32,7 @@ public sealed class ExecRequest
     public long? TimeoutSeconds { get; set; }
 }
 
-/// <summary>Current state of an AgentCell execution task.</summary>
+/// <summary>Current state of a Kekkai Runtime execution task.</summary>
 [JsonConverter(typeof(ExecStatusJsonConverter))]
 public enum ExecStatus
 {

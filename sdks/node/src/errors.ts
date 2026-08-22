@@ -1,7 +1,7 @@
-import type { AgentCellErrorKind } from "./types.js";
+import type { KekkaiRuntimeErrorKind } from "./types.js";
 
-export class AgentCellError extends Error {
-  readonly kind: AgentCellErrorKind;
+export class KekkaiRuntimeError extends Error {
+  readonly kind: KekkaiRuntimeErrorKind;
   readonly operation: string;
   readonly status: number | undefined;
   readonly details: unknown;
@@ -9,7 +9,7 @@ export class AgentCellError extends Error {
   constructor(
     message: string,
     options: {
-      kind: AgentCellErrorKind;
+      kind: KekkaiRuntimeErrorKind;
       operation: string;
       status?: number;
       details?: unknown;
@@ -17,7 +17,7 @@ export class AgentCellError extends Error {
     },
   ) {
     super(message, { cause: options.cause });
-    this.name = "AgentCellError";
+    this.name = "KekkaiRuntimeError";
     this.kind = options.kind;
     this.operation = options.operation;
     this.status = options.status;

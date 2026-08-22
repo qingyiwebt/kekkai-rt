@@ -1,6 +1,6 @@
-# AgentCell HTTP API
+# Kekkai Runtime HTTP API
 
-本文档描述 AgentCell Rust/Axum 后端当前提供的 HTTP API。
+本文档描述 Kekkai Runtime Rust/Axum 后端当前提供的 HTTP API。
 
 默认服务地址为 `http://127.0.0.1:8080`，实际地址由配置文件中的
 `[api].listen_addr` 决定。
@@ -10,10 +10,10 @@
 ### 鉴权
 
 除 `GET /healthz` 外，所有 `/v1/*` 接口都需要使用配置文件中的
-`[api].secret` 进行 Bearer Token 鉴权：
+`[api].token` 进行 Bearer Token 鉴权：
 
 ```http
-Authorization: Bearer <api.secret>
+Authorization: Bearer <api.token>
 ```
 
 缺少或不匹配的 `Authorization` 请求头返回 `401 Unauthorized`。鉴权失败时响应体为空。
@@ -85,7 +85,7 @@ curl http://127.0.0.1:8080/healthz
 请求头：
 
 ```http
-Authorization: Bearer <api.secret>
+Authorization: Bearer <api.token>
 Content-Type: application/json
 ```
 
@@ -106,7 +106,7 @@ Content-Type: application/json
   "argv": ["/bin/sh", "-c", "printf '%s\\n' \"$NAME\""],
   "cwd": "/workspace",
   "env": {
-    "NAME": "AgentCell"
+    "NAME": "Kekkai Runtime"
   },
   "stdin": "",
   "timeout_seconds": 30

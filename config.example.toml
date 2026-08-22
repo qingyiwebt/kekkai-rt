@@ -1,6 +1,6 @@
 [api]
 listen_addr = "0.0.0.0:8080"
-secret = "replace-me"
+token = "replace-me"
 
 [sandbox]
 rootfs_dir = "./alpine" # writable changes persist across container restarts
@@ -8,7 +8,7 @@ workspace_dir = "./workspace"
 backend = "runsc"
 max_timeout_seconds = 300
 network_mode = "nat" # nat, host, or none
-network_bridge = "agentcell0"
+network_bridge = "kekkai-rt0"
 network_subnet = "10.200.0.0/24"
 network_gateway = "10.200.0.1"
 network_ip = "10.200.0.2"
@@ -17,4 +17,5 @@ network_dns = ["1.1.1.1", "8.8.8.8"]
 # Optional host-side tool proxy. Paths are relative to this config file.
 # [tools.'something-cli']
 # path = "./something-cli"
+# env is optional; omit it to run the tool without injected environment variables.
 # env = "./for-something-cli.env"

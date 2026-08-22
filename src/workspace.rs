@@ -92,7 +92,7 @@ impl WorkspaceService {
             .parent()
             .ok_or_else(|| WorkspaceError::InvalidPath("invalid workspace path".into()))?;
         ensure_directory(parent).await.map_err(WorkspaceError::Io)?;
-        let temporary = parent.join(format!(".agentcell-{}.tmp", Uuid::new_v4()));
+        let temporary = parent.join(format!(".kekkai-rt-{}.tmp", Uuid::new_v4()));
         let result = async {
             let mut file = fs::OpenOptions::new()
                 .write(true)

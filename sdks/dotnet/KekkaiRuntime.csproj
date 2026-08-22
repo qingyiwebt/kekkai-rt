@@ -5,13 +5,13 @@
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <AssemblyName>AgentCell</AssemblyName>
-    <RootNamespace>AgentCell</RootNamespace>
-    <PackageId>AgentCell</PackageId>
-    <Version>0.1.0</Version>
-    <Authors>AgentCell contributors</Authors>
-    <Description>.NET Standard 2.1 client SDK for the AgentCell HTTP API.</Description>
-    <PackageTags>agentcell;sandbox;http;execution;workspace</PackageTags>
+    <AssemblyName>KekkaiRuntime</AssemblyName>
+    <RootNamespace>KekkaiRuntime</RootNamespace>
+    <PackageId>KekkaiRuntime</PackageId>
+    <Version>0.2.0</Version>
+    <Authors>Kekkai Runtime contributors</Authors>
+    <Description>.NET Standard 2.1 client SDK for the Kekkai Runtime HTTP API.</Description>
+    <PackageTags>kekkai-rt;sandbox;http;execution;workspace</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <IncludeSymbols>true</IncludeSymbols>

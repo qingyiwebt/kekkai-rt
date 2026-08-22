@@ -24,13 +24,14 @@ pub struct Config {
 #[derive(Clone, Debug, Deserialize)]
 pub struct ApiConfig {
     pub listen_addr: SocketAddr,
-    pub secret: String,
+    pub token: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ToolConfig {
     pub path: PathBuf,
-    pub env: PathBuf,
+    #[serde(default)]
+    pub env: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -72,7 +73,7 @@ fn default_network_mode() -> String {
 }
 
 fn default_network_bridge() -> String {
-    "agentcell0".into()
+    "kekkai-rt0".into()
 }
 
 fn default_network_subnet() -> String {
@@ -97,8 +98,8 @@ pub enum ConfigError {
     Io(#[from] std::io::Error),
     #[error("parse config: {0}")]
     Parse(#[from] toml::de::Error),
-    #[error("api.secret must not be empty")]
-    EmptySecret,
+    #[error("api.token must not be empty")]
+    EmptyToken,
     #[error("sandbox.backend must be runsc or runc")]
     InvalidBackend,
     #[error("sandbox.rootfs_dir does not exist or is not a directory: {0}")]
@@ -118,8 +119,8 @@ pub enum ConfigError {
 impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let mut config: Self = toml::from_str(&fs::read_to_string(path)?)?;
-        if config.api.secret.trim().is_empty() {
-            return Err(ConfigError::EmptySecret);
+        if config.api.token.trim().is_empty() {
+            return Err(ConfigError::EmptyToken);
         }
         if config.sandbox.backend != "runsc" && config.sandbox.backend != "runc" {
             return Err(ConfigError::InvalidBackend);
@@ -145,7 +146,7 @@ impl Config {
                 return Err(ConfigError::InvalidToolName { name: name.clone() });
             }
             tool.path = resolve_path(&config_dir, tool.path.clone());
-            tool.env = resolve_path(&config_dir, tool.env.clone());
+            tool.env = tool.env.take().map(|env| resolve_path(&config_dir, env));
 
             let metadata = fs::metadata(&tool.path).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
@@ -170,21 +171,23 @@ impl Config {
                 });
             }
 
-            let env_metadata = fs::metadata(&tool.env).map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    ConfigError::InvalidToolEnvPath {
-                        name: name.clone(),
-                        path: tool.env.clone(),
+            if let Some(env) = &tool.env {
+                let env_metadata = fs::metadata(env).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        ConfigError::InvalidToolEnvPath {
+                            name: name.clone(),
+                            path: env.clone(),
+                        }
+                    } else {
+                        ConfigError::Io(error)
                     }
-                } else {
-                    ConfigError::Io(error)
+                })?;
+                if !env_metadata.is_file() {
+                    return Err(ConfigError::InvalidToolEnvPath {
+                        name: name.clone(),
+                        path: env.clone(),
+                    });
                 }
-            })?;
-            if !env_metadata.is_file() {
-                return Err(ConfigError::InvalidToolEnvPath {
-                    name: name.clone(),
-                    path: tool.env.clone(),
-                });
             }
         }
 
@@ -244,7 +247,7 @@ mod tests {
             r#"
 [api]
 listen_addr = "127.0.0.1:0"
-secret = "secret"
+token = "secret"
 
 [sandbox]
 rootfs_dir = "rootfs"
@@ -285,7 +288,7 @@ workspace_dir = "workspace"
             r#"
 [api]
 listen_addr = "127.0.0.1:0"
-secret = "secret"
+token = "secret"
 
 [sandbox]
 rootfs_dir = "rootfs"
@@ -301,7 +304,35 @@ env = "tool.env"
         let tool = config.tools.get("something-cli").unwrap();
         let config_dir = fs::canonicalize(temp.path()).unwrap();
         assert_eq!(tool.path, config_dir.join("tool"));
-        assert_eq!(tool.env, config_dir.join("tool.env"));
+        assert_eq!(tool.env, Some(config_dir.join("tool.env")));
+    }
+
+    #[test]
+    fn load_allows_tools_without_env_file() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("rootfs")).unwrap();
+        let tool = temp.path().join("tool");
+        fs::write(&tool, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        let config_path = temp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[api]
+listen_addr = "127.0.0.1:0"
+token = "token"
+
+[sandbox]
+rootfs_dir = "rootfs"
+
+[tools.'something-cli']
+path = "tool"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert_eq!(config.tools["something-cli"].env, None);
     }
 
     #[test]
@@ -313,7 +344,7 @@ env = "tool.env"
             r#"
 [api]
 listen_addr = "127.0.0.1:0"
-secret = "secret"
+token = "secret"
 
 [sandbox]
 bundle_dir = "."

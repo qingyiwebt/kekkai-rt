@@ -22,7 +22,7 @@ jobs:
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
-          name: agent-cell-x86_64-unknown-linux-gnu
+          name: kekkai-rt-x86_64-unknown-linux-gnu
           path: dist
 
       - name: Create GitHub Release
@@ -30,10 +30,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/agent-cell-x86_64-unknown-linux-gnu \
-            dist/agent-cell-x86_64-unknown-linux-gnu.sha256 \
-            dist/agentcell-tool-proxy-x86_64-unknown-linux-gnu \
-            dist/agentcell-tool-proxy-x86_64-unknown-linux-gnu.sha256 \
+            dist/kekkai-rt-x86_64-unknown-linux-gnu \
+            dist/kekkai-rt-x86_64-unknown-linux-gnu.sha256 \
+            dist/kekkai-rt-tool-proxy-x86_64-unknown-linux-gnu \
+            dist/kekkai-rt-tool-proxy-x86_64-unknown-linux-gnu.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes

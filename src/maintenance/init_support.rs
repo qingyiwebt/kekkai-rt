@@ -157,7 +157,7 @@ struct GeneratedConfig {
 #[derive(Serialize)]
 struct GeneratedApiConfig {
     listen_addr: String,
-    secret: String,
+    token: String,
 }
 
 #[derive(Serialize)]
@@ -178,7 +178,7 @@ pub(crate) fn generated_config(rootfs: &Path, workspace: &Path) -> anyhow::Resul
     let config = GeneratedConfig {
         api: GeneratedApiConfig {
             listen_addr: "0.0.0.0:8080".into(),
-            secret: Uuid::new_v4().as_simple().to_string(),
+            token: Uuid::new_v4().as_simple().to_string(),
         },
         sandbox: GeneratedSandboxConfig {
             rootfs_dir: rootfs.to_string_lossy().into_owned(),
@@ -186,7 +186,7 @@ pub(crate) fn generated_config(rootfs: &Path, workspace: &Path) -> anyhow::Resul
             backend: "runsc".into(),
             max_timeout_seconds: 300,
             network_mode: "nat".into(),
-            network_bridge: "agentcell0".into(),
+            network_bridge: "kekkai-rt0".into(),
             network_subnet: "10.200.0.0/24".into(),
             network_gateway: "10.200.0.1".into(),
             network_ip: "10.200.0.2".into(),

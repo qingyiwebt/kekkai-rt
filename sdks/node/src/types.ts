@@ -1,7 +1,7 @@
-export interface AgentCellClientOptions {
+export interface KekkaiRuntimeClientOptions {
   /** The HTTP(S) origin, optionally including a path prefix. */
   baseUrl: string | URL;
-  /** Bearer token configured in AgentCell's api.secret setting. */
+  /** Bearer token configured in Kekkai Runtime's api.token setting. */
   token: string;
   /** Injectable fetch implementation, primarily useful for tests. */
   fetch?: typeof globalThis.fetch;
@@ -107,7 +107,7 @@ export interface WorkspaceApi {
   remove(path: string, options?: WorkspaceOptions): Promise<void>;
 }
 
-export type AgentCellErrorKind =
+export type KekkaiRuntimeErrorKind =
   | "validation"
   | "http"
   | "protocol"

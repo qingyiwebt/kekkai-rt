@@ -8,6 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../AgentCell.csproj" />
+    <ProjectReference Include="../../KekkaiRuntime.csproj" />
   </ItemGroup>
 </Project>

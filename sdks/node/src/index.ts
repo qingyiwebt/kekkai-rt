@@ -1,8 +1,8 @@
-export { AgentCellClient } from "./client.js";
-export { AgentCellError } from "./errors.js";
+export { KekkaiRuntimeClient } from "./client.js";
+export { KekkaiRuntimeError } from "./errors.js";
 export type {
-  AgentCellClientOptions,
-  AgentCellErrorKind,
+  KekkaiRuntimeClientOptions,
+  KekkaiRuntimeErrorKind,
   ExecEvent,
   ExecRequest,
   ExecResult,

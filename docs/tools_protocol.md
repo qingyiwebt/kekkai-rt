@@ -1,4 +1,4 @@
-# AgentCell tool proxy protocol
+# Kekkai Runtime tool proxy protocol
 
 The proxy is enabled when the top-level `tools` table contains at least one entry. The configured key is selected by the basename of the executable inside the container:
 
@@ -8,14 +8,14 @@ path = "./something-cli"
 env = "./for-something-cli.env"
 ```
 
-The env file is reread immediately before each tool process starts. It is never copied into the container.
+The `env` field is optional. When present, the env file is reread immediately before each tool process starts and is never copied into the container. When omitted, no environment variables are injected into the tool process.
 
 ## Socket
 
-When tools are configured, AgentCell exposes one Unix socket inside the container:
+When tools are configured, Kekkai Runtime exposes one Unix socket inside the container:
 
 ```text
-/run/agentcell-tools.socket
+/run/kekkai-rt-tools.socket
 ```
 
 The socket uses a binary full-duplex protocol. Every frame is:
@@ -47,7 +47,7 @@ STDIN     0x02     raw stdin bytes
 STDIN_EOF 0x03     empty payload; closes the tool's stdin normally
 ```
 
-The client must keep the connection open after `STDIN_EOF` while it receives the result. If the connection closes before the tool finishes, AgentCell kills the entire tool process group.
+The client must keep the connection open after `STDIN_EOF` while it receives the result. If the connection closes before the tool finishes, Kekkai Runtime kills the entire tool process group.
 
 ## Server frames
 
@@ -64,10 +64,10 @@ An `ERROR` frame is followed by an `EXIT` frame with code `127` when the request
 
 ## Go proxy
 
-The repository's `proxy/` directory contains a libc-independent Go client. Build or download the Linux amd64 binary, then copy or symlink it under every configured tool name:
+The repository's `sdks/proxy/` directory contains a libc-independent Go client. Build or download the Linux amd64 binary, then copy or symlink it under every configured tool name:
 
 ```sh
-cp agentcell-tool-proxy-x86_64-unknown-linux-gnu something-cli
+cp kekkai-rt-tool-proxy-x86_64-unknown-linux-gnu something-cli
 chmod +x something-cli
 ./something-cli arg1 arg2 < input.dat
 ```

@@ -8,10 +8,10 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace AgentCell;
+namespace KekkaiRuntime;
 
-/// <summary>Low-level client that maps directly to AgentCell HTTP API endpoints.</summary>
-public sealed class AgentCellApiClient : IDisposable
+/// <summary>Low-level client that maps directly to Kekkai Runtime HTTP API endpoints.</summary>
+public sealed class KekkaiRuntimeApiClient : IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private readonly HttpClient _httpClient;
@@ -20,7 +20,7 @@ public sealed class AgentCellApiClient : IDisposable
     private readonly bool _disposeHttpClient;
 
     /// <summary>Creates an API client using an injected HttpClient. The HttpClient is not disposed.</summary>
-    public AgentCellApiClient(HttpClient httpClient, Uri baseUri, string token)
+    public KekkaiRuntimeApiClient(HttpClient httpClient, Uri baseUri, string token)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _baseUri = NormalizeBaseUri(baseUri);
@@ -29,7 +29,7 @@ public sealed class AgentCellApiClient : IDisposable
     }
 
     /// <summary>Creates an API client with an internally owned HttpClient.</summary>
-    public AgentCellApiClient(Uri baseUri, string token)
+    public KekkaiRuntimeApiClient(Uri baseUri, string token)
         : this(new HttpClient(), baseUri, token)
     {
         _disposeHttpClient = true;
@@ -44,13 +44,13 @@ public sealed class AgentCellApiClient : IDisposable
             var response = JsonSerializer.Deserialize<HealthResponse>(body, JsonOptions);
             if (response == null || response.Status != "ok")
             {
-                throw new AgentCellProtocolException("Health response has an unexpected shape.", "health", body);
+                throw new KekkaiRuntimeProtocolException("Health response has an unexpected shape.", "health", body);
             }
             return response;
         }
         catch (JsonException)
         {
-            throw new AgentCellProtocolException("Health response is not valid JSON.", "health", body);
+            throw new KekkaiRuntimeProtocolException("Health response is not valid JSON.", "health", body);
         }
     }
 
@@ -77,13 +77,13 @@ public sealed class AgentCellApiClient : IDisposable
                 idElement.ValueKind != JsonValueKind.String ||
                 !Guid.TryParse(idElement.GetString(), out var taskId))
             {
-                throw new AgentCellProtocolException("Execution response is missing task_id.", "createExec", body);
+                throw new KekkaiRuntimeProtocolException("Execution response is missing task_id.", "createExec", body);
             }
             return taskId;
         }
         catch (JsonException)
         {
-            throw new AgentCellProtocolException("Execution response is not valid JSON.", "createExec", body);
+            throw new KekkaiRuntimeProtocolException("Execution response is not valid JSON.", "createExec", body);
         }
     }
 
@@ -103,13 +103,13 @@ public sealed class AgentCellApiClient : IDisposable
             var snapshot = JsonSerializer.Deserialize<ExecSnapshot>(body, JsonOptions);
             if (snapshot == null || snapshot.TaskId == Guid.Empty)
             {
-                throw new AgentCellProtocolException("Execution snapshot has an unexpected shape.", "getExec", body);
+                throw new KekkaiRuntimeProtocolException("Execution snapshot has an unexpected shape.", "getExec", body);
             }
             return snapshot;
         }
         catch (JsonException)
         {
-            throw new AgentCellProtocolException("Execution snapshot is not valid JSON.", "getExec", body);
+            throw new KekkaiRuntimeProtocolException("Execution snapshot is not valid JSON.", "getExec", body);
         }
     }
 
@@ -154,13 +154,13 @@ public sealed class AgentCellApiClient : IDisposable
             var directory = JsonSerializer.Deserialize<WorkspaceDirectory>(body, JsonOptions);
             if (directory == null || directory.Type != WorkspaceEntryType.Directory)
             {
-                throw new AgentCellProtocolException("Workspace response is not a directory.", "workspace.list", body);
+                throw new KekkaiRuntimeProtocolException("Workspace response is not a directory.", "workspace.list", body);
             }
             return directory;
         }
         catch (JsonException)
         {
-            throw new AgentCellProtocolException("Workspace response is not valid JSON.", "workspace.list", body);
+            throw new KekkaiRuntimeProtocolException("Workspace response is not valid JSON.", "workspace.list", body);
         }
     }
 
@@ -252,12 +252,12 @@ public sealed class AgentCellApiClient : IDisposable
         return request;
     }
 
-    private static async Task<AgentCellHttpException> CreateHttpExceptionAsync(
+    private static async Task<KekkaiRuntimeHttpException> CreateHttpExceptionAsync(
         string operation,
         HttpResponseMessage response)
     {
         var body = response.Content == null ? null : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-        return new AgentCellHttpException(operation, response.StatusCode, body);
+        return new KekkaiRuntimeHttpException(operation, response.StatusCode, body);
     }
 
     private string WorkspacePath(string path, bool allowRoot)
@@ -274,7 +274,7 @@ public sealed class AgentCellApiClient : IDisposable
         if (path.Length == 0)
         {
             if (allowRoot) return new List<string>();
-            throw new AgentCellValidationException("Workspace file path must not be empty.", "workspace");
+            throw new KekkaiRuntimeValidationException("Workspace file path must not be empty.", "workspace");
         }
         var parts = path.Split('/');
         var result = new List<string>(parts.Length);
@@ -282,7 +282,7 @@ public sealed class AgentCellApiClient : IDisposable
         {
             if (part.Length == 0 || part == "." || part == ".." || part.IndexOf('\\') >= 0)
             {
-                throw new AgentCellValidationException(
+                throw new KekkaiRuntimeValidationException(
                     "Workspace path must contain only normal relative components.",
                     "workspace");
             }
@@ -296,21 +296,21 @@ public sealed class AgentCellApiClient : IDisposable
         if (request == null) throw new ArgumentNullException(nameof(request));
         if (request.Argv == null || request.Argv.Count == 0)
         {
-            throw new AgentCellValidationException("argv must not be empty.", "createExec");
+            throw new KekkaiRuntimeValidationException("argv must not be empty.", "createExec");
         }
         foreach (var argument in request.Argv)
         {
-            if (argument == null) throw new AgentCellValidationException("argv must not contain null values.", "createExec");
+            if (argument == null) throw new KekkaiRuntimeValidationException("argv must not contain null values.", "createExec");
         }
         if (request.TimeoutSeconds.HasValue && request.TimeoutSeconds.Value < 0)
         {
-            throw new AgentCellValidationException("timeoutSeconds must be non-negative.", "createExec");
+            throw new KekkaiRuntimeValidationException("timeoutSeconds must be non-negative.", "createExec");
         }
     }
 
     private static void ValidateTaskId(Guid taskId, string operation)
     {
-        if (taskId == Guid.Empty) throw new AgentCellValidationException("taskId must not be empty.", operation);
+        if (taskId == Guid.Empty) throw new KekkaiRuntimeValidationException("taskId must not be empty.", operation);
     }
 
     private static Uri NormalizeBaseUri(Uri baseUri)
@@ -353,12 +353,12 @@ public sealed class AgentCellApiClient : IDisposable
                 case "finished": return new ExecFinishedEvent(ReadExitCode(data));
                 case "timed_out": return new ExecTimedOutEvent();
                 case "failed": return new ExecFailedEvent(ReadStringPayload(data, "failed", "error"));
-                default: throw new AgentCellProtocolException($"Unknown SSE event '{eventName}'.", "events", data);
+                default: throw new KekkaiRuntimeProtocolException($"Unknown SSE event '{eventName}'.", "events", data);
             }
         }
         catch (JsonException)
         {
-            throw new AgentCellProtocolException($"SSE event '{eventName}' contains invalid JSON.", "events", data);
+            throw new KekkaiRuntimeProtocolException($"SSE event '{eventName}' contains invalid JSON.", "events", data);
         }
     }
 
@@ -367,7 +367,7 @@ public sealed class AgentCellApiClient : IDisposable
         using var document = JsonDocument.Parse(data);
         if (!document.RootElement.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.String)
         {
-            throw new AgentCellProtocolException($"SSE event '{eventName}' is missing '{property}'.", "events", data);
+            throw new KekkaiRuntimeProtocolException($"SSE event '{eventName}' is missing '{property}'.", "events", data);
         }
         return value.GetString() ?? string.Empty;
     }

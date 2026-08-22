@@ -16,7 +16,7 @@ pub(super) async fn check(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.strip_prefix("Bearer ").unwrap_or("") == state.auth_secret.as_ref())
+        .map(|v| v.strip_prefix("Bearer ").unwrap_or("") == state.auth_token.as_ref())
         .unwrap_or(false);
     if !ok {
         return StatusCode::UNAUTHORIZED.into_response();

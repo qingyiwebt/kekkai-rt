@@ -1,23 +1,23 @@
-import { AgentCellError } from "./errors.js";
+import { KekkaiRuntimeError } from "./errors.js";
 import { ExecutionClient } from "./execution.js";
 import { decodeHealth } from "./protocol.js";
 import { Transport } from "./transport.js";
 import { WorkspaceClient } from "./workspace.js";
 import type {
-  AgentCellClientOptions,
+  KekkaiRuntimeClientOptions,
   ExecutionApi,
   HealthResponse,
   WorkspaceApi,
 } from "./types.js";
 
-export class AgentCellClient {
+export class KekkaiRuntimeClient {
   readonly exec: ExecutionApi;
   readonly workspace: WorkspaceApi;
   private readonly transport: Transport;
 
-  constructor(options: AgentCellClientOptions) {
+  constructor(options: KekkaiRuntimeClientOptions) {
     if (!options || typeof options !== "object") {
-      throw new AgentCellError("options must be an object", {
+      throw new KekkaiRuntimeError("options must be an object", {
         kind: "validation",
         operation: "constructor",
       });

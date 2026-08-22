@@ -15,7 +15,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::time::{sleep, timeout, Instant};
 use tracing::{debug, info, warn};
 
-const CONTAINER_ID: &str = "agent-cell";
+const CONTAINER_ID: &str = "kekkai-rt";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -38,7 +38,7 @@ impl Sandbox {
                 .collect::<Vec<_>>()
                 .join(", ");
             bail!(
-                "sandbox sysroot is not ready: {details}; run `agent-cell fix` to repair directories"
+                "sandbox sysroot is not ready: {details}; run `kekkai-rt fix` to repair directories"
             );
         }
 
@@ -56,7 +56,7 @@ impl Sandbox {
             .await
             .with_context(|| {
                 format!(
-                    "runtime {} is not installed; install it before starting AgentCell",
+                    "runtime {} is not installed; install it before starting Kekkai Runtime",
                     runtime.program()
                 )
             })?;
@@ -350,7 +350,7 @@ esac
             .unwrap();
         assert_eq!(
             exec,
-            "exec --cwd /workspace --env FOO=bar agent-cell /bin/echo hello"
+            "exec --cwd /workspace --env FOO=bar kekkai-rt /bin/echo hello"
         );
 
         sandbox.shutdown().await.unwrap();

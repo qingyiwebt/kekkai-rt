@@ -1,4 +1,4 @@
-import { AgentCellError } from "./errors.js";
+import { KekkaiRuntimeError } from "./errors.js";
 
 export interface TransportOptions {
   baseUrl: string | URL;
@@ -14,7 +14,7 @@ export class Transport {
   constructor(options: TransportOptions) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl);
     if (typeof options.token !== "string") {
-      throw new AgentCellError("token must be a string", {
+      throw new KekkaiRuntimeError("token must be a string", {
         kind: "validation",
         operation: "constructor",
       });
@@ -60,7 +60,7 @@ export class Transport {
       headers: { accept: "text/event-stream" },
     }, signal));
     if (!response.body) {
-      throw new AgentCellError("SSE response has no body", {
+      throw new KekkaiRuntimeError("SSE response has no body", {
         kind: "protocol",
         operation,
       });
@@ -85,13 +85,13 @@ export class Transport {
       });
     } catch (error) {
       if (isAbortError(error, init.signal)) {
-        throw new AgentCellError("request was aborted", {
+        throw new KekkaiRuntimeError("request was aborted", {
           kind: "aborted",
           operation,
           cause: error,
         });
       }
-      throw new AgentCellError("request failed", {
+      throw new KekkaiRuntimeError("request failed", {
         kind: "http",
         operation,
         cause: error,
@@ -100,7 +100,7 @@ export class Transport {
 
     if (!response.ok) {
       const details = await readResponseBody(response);
-      throw new AgentCellError(messageFromResponse(response.status, details), {
+      throw new KekkaiRuntimeError(messageFromResponse(response.status, details), {
         kind: "http",
         operation,
         status: response.status,
@@ -136,14 +136,14 @@ function normalizeBaseUrl(input: string | URL): URL {
   try {
     url = new URL(input);
   } catch (error) {
-    throw new AgentCellError("baseUrl must be a valid absolute URL", {
+    throw new KekkaiRuntimeError("baseUrl must be a valid absolute URL", {
       kind: "validation",
       operation: "constructor",
       cause: error,
     });
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new AgentCellError("baseUrl must use http or https", {
+    throw new KekkaiRuntimeError("baseUrl must use http or https", {
       kind: "validation",
       operation: "constructor",
     });
@@ -161,7 +161,7 @@ function messageFromResponse(status: number, body: unknown): string {
   if (typeof body === "string" && body.length > 0) {
     return body;
   }
-  return `AgentCell request failed with HTTP ${status}`;
+  return `Kekkai Runtime request failed with HTTP ${status}`;
 }
 
 function isAbortError(error: unknown, signal: AbortSignal | null | undefined): boolean {

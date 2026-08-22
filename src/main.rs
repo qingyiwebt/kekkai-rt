@@ -16,7 +16,7 @@ use std::{path::PathBuf, sync::Arc};
 use tracing::info;
 
 #[derive(Parser, Debug)]
-#[command(name = "agent-cell")]
+#[command(name = "kekkai-rt")]
 struct Args {
     #[arg(short, long, global = true, default_value = "config.toml")]
     config: PathBuf,
@@ -54,7 +54,7 @@ async fn run_server(config_path: &std::path::Path) -> anyhow::Result<()> {
             return Err(error.into());
         }
     };
-    info!(address = %listener.local_addr()?, backend = %config.sandbox.backend, "agent-cell listening");
+    info!(address = %listener.local_addr()?, backend = %config.sandbox.backend, "kekkai-rt listening");
     let server_result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .await;
@@ -82,7 +82,7 @@ async fn shutdown() {
 
 fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("agent_cell=info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("kekkai_rt=info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
@@ -92,35 +92,35 @@ mod tests {
 
     #[test]
     fn no_command_means_server_mode() {
-        let args = Args::try_parse_from(["agent-cell"]).unwrap();
+        let args = Args::try_parse_from(["kekkai-rt"]).unwrap();
         assert!(args.command.is_none());
         assert_eq!(args.config, PathBuf::from("config.toml"));
     }
 
     #[test]
     fn maintenance_commands_accept_config_before_or_after_subcommand() {
-        let before = Args::try_parse_from(["agent-cell", "--config", "one.toml", "check"]).unwrap();
+        let before = Args::try_parse_from(["kekkai-rt", "--config", "one.toml", "check"]).unwrap();
         assert!(matches!(before.command, Some(maintenance::Command::Check)));
         assert_eq!(before.config, PathBuf::from("one.toml"));
 
-        let after = Args::try_parse_from(["agent-cell", "fix", "--config", "two.toml"]).unwrap();
+        let after = Args::try_parse_from(["kekkai-rt", "fix", "--config", "two.toml"]).unwrap();
         assert!(matches!(after.command, Some(maintenance::Command::Fix)));
         assert_eq!(after.config, PathBuf::from("two.toml"));
     }
 
     #[test]
     fn init_takes_distribution_as_a_positional_argument() {
-        let args = Args::try_parse_from(["agent-cell", "init", "alpine"]).unwrap();
+        let args = Args::try_parse_from(["kekkai-rt", "init", "alpine"]).unwrap();
         assert!(matches!(
             args.command,
             Some(maintenance::Command::Init { .. })
         ));
 
         let args =
-            Args::try_parse_from(["agent-cell", "init", "alpine", "--version", "3.24.1"]).unwrap();
+            Args::try_parse_from(["kekkai-rt", "init", "alpine", "--version", "3.24.1"]).unwrap();
         assert!(
             matches!(args.command, Some(maintenance::Command::Init { version: Some(version), .. }) if version == "3.24.1")
         );
-        assert!(Args::try_parse_from(["agent-cell", "init", "debian"]).is_err());
+        assert!(Args::try_parse_from(["kekkai-rt", "init", "debian"]).is_err());
     }
 }

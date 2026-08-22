@@ -7,7 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
-using AgentCell;
+using KekkaiRuntime;
 
 await ProtocolTests.RunAsync();
 
@@ -15,7 +15,7 @@ static class ProtocolTests
 {
     private static readonly Guid TaskId = Guid.Parse("550e8400-e29b-41d4-a716-446655440000");
     private const string Token = "test-token";
-    private const string BaseUrl = "http://agentcell.test/";
+    private const string BaseUrl = "http://kekkai-rt.test/";
 
     public static async Task RunAsync()
     {
@@ -24,7 +24,7 @@ static class ProtocolTests
         await WorkspaceUsesEncodedPathAndAuthAsync();
         await ProtocolErrorsAreReportedAsync();
         await CancellationStopsSseEnumerationAsync();
-        Console.WriteLine("AgentCell protocol tests passed.");
+        Console.WriteLine("Kekkai Runtime protocol tests passed.");
     }
 
     private static async Task HighLevelExecutionUsesAsyncStreamAsync()
@@ -47,7 +47,7 @@ static class ProtocolTests
             }
             throw new InvalidOperationException($"Unexpected request: {request.Method} {request.RequestUri}");
         }));
-        using var client = new AgentCellClient(httpClient, new Uri(BaseUrl), Token);
+        using var client = new KekkaiRuntimeClient(httpClient, new Uri(BaseUrl), Token);
 
         var events = new List<ExecEvent>();
         await foreach (var @event in client.ExecuteAsync(new ExecRequest
@@ -83,7 +83,7 @@ static class ProtocolTests
             }
             throw new InvalidOperationException("Unexpected request in ExecuteAndWait test.");
         }));
-        using var client = new AgentCellClient(httpClient, new Uri(BaseUrl), Token);
+        using var client = new KekkaiRuntimeClient(httpClient, new Uri(BaseUrl), Token);
 
         var result = await client.ExecuteAndWaitAsync(new ExecRequest { Argv = new[] { "/bin/echo", "hello" } });
 
@@ -112,7 +112,7 @@ static class ProtocolTests
             }
             throw new InvalidOperationException("Unexpected workspace request.");
         }));
-        using var api = new AgentCellApiClient(httpClient, new Uri(BaseUrl), Token);
+        using var api = new KekkaiRuntimeApiClient(httpClient, new Uri(BaseUrl), Token);
 
         var directory = await api.ListWorkspaceAsync();
         var bytes = await api.ReadWorkspaceFileAsync("space file.bin");
@@ -135,17 +135,17 @@ static class ProtocolTests
                 Content = JsonContent("{\"error\":\"bad request\"}"),
             };
         }));
-        using var api = new AgentCellApiClient(httpClient, new Uri(BaseUrl), Token);
+        using var api = new KekkaiRuntimeApiClient(httpClient, new Uri(BaseUrl), Token);
 
-        await AssertThrowsAsync<AgentCellProtocolException>(async () =>
+        await AssertThrowsAsync<KekkaiRuntimeProtocolException>(async () =>
         {
             await foreach (var _ in api.EventsAsync(TaskId)) { }
         }, "unknown SSE event should be a protocol error");
 
-        await AssertThrowsAsync<AgentCellHttpException>(async () =>
+        await AssertThrowsAsync<KekkaiRuntimeHttpException>(async () =>
         {
             await api.GetExecAsync(TaskId);
-        }, "HTTP errors should be mapped to AgentCellHttpException");
+        }, "HTTP errors should be mapped to KekkaiRuntimeHttpException");
     }
 
     private static async Task CancellationStopsSseEnumerationAsync()
@@ -154,7 +154,7 @@ static class ProtocolTests
         {
             Content = new BlockingContent(),
         }));
-        using var api = new AgentCellApiClient(httpClient, new Uri(BaseUrl), Token);
+        using var api = new KekkaiRuntimeApiClient(httpClient, new Uri(BaseUrl), Token);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
 
         await AssertThrowsAsync<OperationCanceledException>(async () =>

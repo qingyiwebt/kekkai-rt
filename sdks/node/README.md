@@ -1,21 +1,21 @@
-# @agent-cell/sdk
+# @kekkai-rt/sdk
 
-面向 Node.js 20+ 的现代 AgentCell SDK。SDK 使用原生 `fetch`、Web Streams 和 ESM，隐藏 HTTP 路径、snake_case 字段以及 SSE 协议细节。
+面向 Node.js 20+ 的现代 Kekkai Runtime SDK。SDK 使用原生 `fetch`、Web Streams 和 ESM，隐藏 HTTP 路径、snake_case 字段以及 SSE 协议细节。
 
 ## 安装
 
 ```sh
-pnpm add @agent-cell/sdk
+pnpm add @kekkai-rt/sdk
 ```
 
 ## 创建客户端
 
 ```ts
-import { AgentCellClient } from "@agent-cell/sdk";
+import { KekkaiRuntimeClient } from "@kekkai-rt/sdk";
 
-const client = new AgentCellClient({
+const client = new KekkaiRuntimeClient({
   baseUrl: "http://127.0.0.1:8080",
-  token: process.env.AGENTCELL_TOKEN!,
+  token: process.env.TOKEN!,
 });
 
 await client.health();
@@ -31,7 +31,7 @@ const result = await client.exec.run(
     command: "/bin/sh",
     args: ["-c", "printf '%s\\n' \"$NAME\""],
     cwd: "/workspace",
-    env: { NAME: "AgentCell" },
+    env: { NAME: "Kekkai Runtime" },
     input: "",
     timeoutMs: 30_000,
   },
@@ -66,7 +66,7 @@ const result = await task.wait();
 
 ## 工作区文件
 
-工作区路径必须是相对于 AgentCell 工作区根目录的普通路径。SDK 会在发送请求前拒绝 `..`、空路径组件以及不允许的根目录操作。
+工作区路径必须是相对于 Kekkai Runtime 工作区根目录的普通路径。SDK 会在发送请求前拒绝 `..`、空路径组件以及不允许的根目录操作。
 
 ```ts
 const listing = await client.workspace.list("src");
@@ -82,15 +82,15 @@ await client.workspace.remove("output.bin");
 
 ## 错误处理
 
-SDK 对外只暴露 `AgentCellError`：
+SDK 对外只暴露 `KekkaiRuntimeError`：
 
 ```ts
-import { AgentCellError } from "@agent-cell/sdk";
+import { KekkaiRuntimeError } from "@kekkai-rt/sdk";
 
 try {
   await client.exec.run({ command: "/bin/echo", args: ["hello"] });
 } catch (error) {
-  if (error instanceof AgentCellError) {
+  if (error instanceof KekkaiRuntimeError) {
     console.error(error.kind, error.operation, error.status, error.message);
   }
 }
@@ -100,7 +100,7 @@ try {
 
 - `validation`：本地参数校验失败；
 - `http`：服务端返回 HTTP 错误或网络请求失败；
-- `protocol`：服务端响应格式不符合 AgentCell 协议；
+- `protocol`：服务端响应格式不符合 Kekkai Runtime 协议；
 - `aborted`：请求被 `AbortSignal` 取消。
 
 取消客户端的 SSE 或 HTTP 请求不会自动终止已经提交到服务端的执行任务。
@@ -116,7 +116,7 @@ try {
 | `client.workspace.readFile(path)` | `client.workspace.read(path)` |
 | `client.workspace.writeFile(path, data)` | `client.workspace.write(path, data)` |
 | `client.workspace.delete(path)` | `client.workspace.remove(path)` |
-| `AgentCellHttpError`、`AgentCellProtocolError`、`AgentCellValidationError` | `AgentCellError` |
+| `KekkaiRuntimeHttpError`、`KekkaiRuntimeProtocolError`、`KekkaiRuntimeValidationError` | `KekkaiRuntimeError` |
 
 旧协议导向方法和错误子类不再从包入口导出。
 

@@ -24,7 +24,7 @@ impl AlpineRepository {
 
     fn new(base_url: impl Into<String>) -> anyhow::Result<Self> {
         let client = Client::builder()
-            .user_agent(concat!("agent-cell/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("kekkai-rt/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(300))
             .build()
@@ -143,7 +143,7 @@ async fn run_in(
         Err(error) => return Err(error).with_context(|| format!("inspect sysroot {}", rootfs.display())),
     }
 
-    let staging = working_dir.join(format!(".agent-cell-sysroot-{}", Uuid::new_v4()));
+    let staging = working_dir.join(format!(".kekkai-rt-sysroot-{}", Uuid::new_v4()));
     fs::create_dir(&staging)
         .with_context(|| format!("create staging directory {}", staging.display()))?;
 
@@ -242,7 +242,7 @@ mod tests {
         assert!(config_path.is_file());
         assert!(config.sandbox.rootfs_dir.join("bin/sh").is_file());
         assert!(super::super::sysroot::sysroot_issues(&config.sandbox).is_empty());
-        assert!(!config.api.secret.is_empty());
+        assert!(!config.api.token.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -286,7 +286,7 @@ mod tests {
             .unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with(".agent-cell-sysroot-")));
+            .starts_with(".kekkai-rt-sysroot-")));
     }
 
     async fn test_server(

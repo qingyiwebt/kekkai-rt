@@ -1,4 +1,4 @@
-import { AgentCellError } from "./errors.js";
+import { KekkaiRuntimeError } from "./errors.js";
 import { decodeWorkspaceDirectory } from "./protocol.js";
 import { Transport, withSignal } from "./transport.js";
 import type {
@@ -41,7 +41,7 @@ export class WorkspaceClient implements WorkspaceApi {
     options: WorkspaceOptions = {},
   ): Promise<void> {
     if (typeof data !== "string" && !(data instanceof Uint8Array)) {
-      throw new AgentCellError("workspace data must be a string or Uint8Array", {
+      throw new KekkaiRuntimeError("workspace data must be a string or Uint8Array", {
         kind: "validation",
         operation: "workspace.write",
       });
@@ -76,7 +76,7 @@ function workspacePath(path: string, allowRoot: boolean): string {
 
 function validateWorkspacePath(path: string, allowRoot: boolean): string[] {
   if (typeof path !== "string") {
-    throw new AgentCellError("workspace path must be a string", {
+    throw new KekkaiRuntimeError("workspace path must be a string", {
       kind: "validation",
       operation: "workspace",
     });
@@ -85,7 +85,7 @@ function validateWorkspacePath(path: string, allowRoot: boolean): string[] {
     if (allowRoot) {
       return [];
     }
-    throw new AgentCellError("workspace root cannot be used for this operation", {
+    throw new KekkaiRuntimeError("workspace root cannot be used for this operation", {
       kind: "validation",
       operation: "workspace",
     });
@@ -97,7 +97,7 @@ function validateWorkspacePath(path: string, allowRoot: boolean): string[] {
       (segment) => segment.length === 0 || segment === "." || segment === "..",
     )
   ) {
-    throw new AgentCellError(
+    throw new KekkaiRuntimeError(
       "workspace path must contain only normal relative components",
       {
         kind: "validation",

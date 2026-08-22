@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { AgentCellClient, AgentCellError } from "../src/index.js";
+import { KekkaiRuntimeClient, KekkaiRuntimeError } from "../src/index.js";
 
 test("lists, reads, writes, and removes workspace files", async () => {
   const calls: { url: string; init: RequestInit | undefined }[] = [];
@@ -29,7 +29,7 @@ test("lists, reads, writes, and removes workspace files", async () => {
     }
     return new Response(null, { status: 204 });
   };
-  const client = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
+  const client = new KekkaiRuntimeClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
 
   const listing = await client.workspace.list("src");
   const bytes = await client.workspace.read("space file.bin");
@@ -47,14 +47,14 @@ test("lists, reads, writes, and removes workspace files", async () => {
 
 test("rejects traversal and workspace-root mutations locally", async () => {
   const fetch: typeof globalThis.fetch = async () => new Response(null, { status: 204 });
-  const client = new AgentCellClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
+  const client = new KekkaiRuntimeClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
 
   await assert.rejects(
     client.workspace.list("../outside"),
-    (error: unknown) => error instanceof AgentCellError && error.kind === "validation",
+    (error: unknown) => error instanceof KekkaiRuntimeError && error.kind === "validation",
   );
   await assert.rejects(
     client.workspace.remove(""),
-    (error: unknown) => error instanceof AgentCellError && error.kind === "validation",
+    (error: unknown) => error instanceof KekkaiRuntimeError && error.kind === "validation",
   );
 });

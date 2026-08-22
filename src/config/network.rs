@@ -165,7 +165,7 @@ mod tests {
     fn network_defaults_to_nat() {
         let settings = config().network_settings().unwrap();
         assert_eq!(settings.mode, NetworkMode::Nat);
-        assert_eq!(settings.bridge, "agentcell0");
+        assert_eq!(settings.bridge, "kekkai-rt0");
         assert_eq!(settings.subnet.prefix, 24);
         assert_eq!(settings.gateway, Ipv4Addr::new(10, 200, 0, 1));
         assert_eq!(settings.address, Ipv4Addr::new(10, 200, 0, 2));

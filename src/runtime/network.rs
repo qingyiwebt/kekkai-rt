@@ -4,9 +4,9 @@ use std::{ffi::OsStr, process::Output};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-const HOST_VETH: &str = "agentcellv";
-const NETNS_NAME: &str = "agentcellns";
-const NETNS_PATH: &str = "/run/netns/agentcellns";
+const HOST_VETH: &str = "kekkai-rtv";
+const NETNS_NAME: &str = "kekkai-rtns";
+const NETNS_PATH: &str = "/run/netns/kekkai-rtns";
 
 pub(super) struct NetworkSession {
     namespace_path: Option<String>,

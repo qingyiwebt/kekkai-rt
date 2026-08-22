@@ -1,4 +1,4 @@
-import { AgentCellError } from "./errors.js";
+import { KekkaiRuntimeError } from "./errors.js";
 import type {
   ExecEvent,
   ExecRequest,
@@ -146,8 +146,8 @@ function requireString(value: unknown, event: string, operation: string): string
   return value;
 }
 
-function protocolError(message: string, operation: string, details: unknown): AgentCellError {
-  return new AgentCellError(message, {
+function protocolError(message: string, operation: string, details: unknown): KekkaiRuntimeError {
+  return new KekkaiRuntimeError(message, {
     kind: "protocol",
     operation,
     details,

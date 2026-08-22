@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub(crate) auth_secret: Arc<str>,
+    pub(crate) auth_token: Arc<str>,
     pub(crate) execution: Arc<ExecutionService>,
     pub(crate) workspace: WorkspaceService,
 }
@@ -29,7 +29,7 @@ impl AppState {
             .map(|settings| settings.max_timeout)
             .unwrap_or_else(|_| std::time::Duration::from_secs(config.sandbox.max_timeout_seconds));
         Self {
-            auth_secret: Arc::from(config.api.secret),
+            auth_token: Arc::from(config.api.token),
             execution: Arc::new(ExecutionService::new(sandbox, max_timeout)),
             workspace: WorkspaceService::new(config.sandbox.workspace_dir),
         }
@@ -86,7 +86,7 @@ rootfs_dir = "."
         let config = Config {
             api: crate::config::ApiConfig {
                 listen_addr: "127.0.0.1:0".parse().unwrap(),
-                secret: "secret".into(),
+                token: "secret".into(),
             },
             sandbox,
             tools: HashMap::new(),
@@ -152,7 +152,7 @@ rootfs_dir = "."
         let config = Config {
             api: crate::config::ApiConfig {
                 listen_addr: "127.0.0.1:0".parse().unwrap(),
-                secret: "secret".into(),
+                token: "secret".into(),
             },
             sandbox,
             tools: HashMap::new(),

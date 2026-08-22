@@ -182,7 +182,7 @@ fn run_args(
     if persist_rootfs {
         // runsc enables a writable rootfs overlay by default. Disable it so
         // writes go to the configured rootfs directory and survive container
-        // deletion and the next AgentCell startup.
+        // deletion and the next Kekkai Runtime startup.
         args.push("--overlay2=none".into());
     }
     args.extend([
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn runsc_disables_temporary_rootfs_overlay() {
-        let runtime = RuntimeClient::new("runsc", "agent-cell", false, true);
+        let runtime = RuntimeClient::new("runsc", "kekkai-rt", false, true);
         assert_eq!(
             run_args(
                 runtime.allow_host_uds,
@@ -222,13 +222,7 @@ mod tests {
                 std::path::Path::new("/bundle"),
                 &runtime.container_id,
             ),
-            vec![
-                "--overlay2=none",
-                "run",
-                "--bundle",
-                "/bundle",
-                "agent-cell"
-            ]
+            vec!["--overlay2=none", "run", "--bundle", "/bundle", "kekkai-rt"]
         );
     }
 }

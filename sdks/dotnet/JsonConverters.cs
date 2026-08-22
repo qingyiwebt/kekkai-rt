@@ -2,7 +2,7 @@ using System;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace AgentCell;
+namespace KekkaiRuntime;
 
 internal sealed class ExecStatusJsonConverter : JsonConverter<ExecStatus>
 {

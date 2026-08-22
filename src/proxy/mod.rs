@@ -32,7 +32,7 @@ const STDERR: u8 = 0x11;
 const EXIT: u8 = 0x12;
 const ERROR: u8 = 0x13;
 
-pub(crate) const SOCKET_DESTINATION: &str = "/run/agentcell-tools.socket";
+pub(crate) const SOCKET_DESTINATION: &str = "/run/kekkai-rt-tools.socket";
 
 #[derive(Clone, Debug)]
 pub(crate) struct ToolSocketMount {
@@ -43,7 +43,7 @@ pub(crate) struct ToolSocketMount {
 #[derive(Clone)]
 struct ToolSpec {
     path: PathBuf,
-    env_path: PathBuf,
+    env_path: Option<PathBuf>,
 }
 
 struct ProxyState {
@@ -71,7 +71,7 @@ impl ToolProxy {
         let socket_dir = cfg.managed_bundle_dir.join("tools");
         fs::create_dir_all(&socket_dir)
             .with_context(|| format!("create tool socket directory {}", socket_dir.display()))?;
-        let socket_path = socket_dir.join("agentcell-tools.socket");
+        let socket_path = socket_dir.join("kekkai-rt-tools.socket");
         remove_stale_socket(&socket_path)?;
         let listener = UnixListener::bind(&socket_path)
             .with_context(|| format!("bind tool socket {}", socket_path.display()))?;
@@ -195,15 +195,18 @@ async fn handle_connection(mut stream: UnixStream, state: Arc<ProxyState>) -> an
         .await;
     };
 
-    let environment = match load_dotenv(&tool.env_path) {
-        Ok(environment) => environment,
-        Err(error) => {
-            return send_failure(
-                &mut stream,
-                format!("failed to load tool environment: {error}"),
-            )
-            .await;
-        }
+    let environment = match tool.env_path.as_deref() {
+        Some(env_path) => match load_dotenv(env_path) {
+            Ok(environment) => environment,
+            Err(error) => {
+                return send_failure(
+                    &mut stream,
+                    format!("failed to load tool environment: {error}"),
+                )
+                .await;
+            }
+        },
+        None => HashMap::new(),
     };
 
     let mut command = Command::new(&tool.path);
@@ -562,8 +565,13 @@ mod tests {
         let env = temp.path().join("tool.env");
         fs::write(&env, "TOOL_SECRET=secret\n").unwrap();
         let cfg = config(temp.path());
-        let configured_tools =
-            HashMap::from([("something-cli".into(), ToolConfig { path: script, env })]);
+        let configured_tools = HashMap::from([(
+            "something-cli".into(),
+            ToolConfig {
+                path: script,
+                env: Some(env),
+            },
+        )]);
         let proxy = ToolProxy::start(&cfg, &configured_tools)
             .await
             .unwrap()
@@ -604,6 +612,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_does_not_inject_environment_without_env_file() {
+        let temp = tempdir().unwrap();
+        let script = temp.path().join("tool.sh");
+        fs::write(&script, "#!/bin/sh\nprintf '%s' \"${TOOL_SECRET-unset}\"\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let cfg = config(temp.path());
+        let configured_tools = HashMap::from([(
+            "something-cli".into(),
+            ToolConfig {
+                path: script,
+                env: None,
+            },
+        )]);
+        let proxy = ToolProxy::start(&cfg, &configured_tools)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut stream = UnixStream::connect(&proxy.socket_path).await.unwrap();
+        open(&mut stream, "something-cli", &[]).await;
+        write_frame(&mut stream, STDIN_EOF, &[]).await.unwrap();
+
+        let mut stdout = Vec::new();
+        loop {
+            let (kind, payload) = read_frame(&mut stream).await.unwrap();
+            match kind {
+                STDOUT => stdout.extend(payload),
+                EXIT => break,
+                ERROR => panic!(
+                    "unexpected proxy error: {}",
+                    String::from_utf8_lossy(&payload)
+                ),
+                _ => {}
+            }
+        }
+        assert_eq!(stdout, b"unset");
+        proxy.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn disconnecting_socket_terminates_the_tool_group() {
         let temp = tempdir().unwrap();
         let marker = temp.path().join("marker");
@@ -617,8 +665,13 @@ mod tests {
         let env = temp.path().join("tool.env");
         fs::write(&env, "").unwrap();
         let cfg = config(temp.path());
-        let configured_tools =
-            HashMap::from([("long-tool".into(), ToolConfig { path: script, env })]);
+        let configured_tools = HashMap::from([(
+            "long-tool".into(),
+            ToolConfig {
+                path: script,
+                env: Some(env),
+            },
+        )]);
         let proxy = ToolProxy::start(&cfg, &configured_tools)
             .await
             .unwrap()
@@ -645,8 +698,13 @@ mod tests {
         let env = temp.path().join("tool.env");
         fs::write(&env, "").unwrap();
         let cfg = config(temp.path());
-        let configured_tools =
-            HashMap::from([("shutdown-tool".into(), ToolConfig { path: script, env })]);
+        let configured_tools = HashMap::from([(
+            "shutdown-tool".into(),
+            ToolConfig {
+                path: script,
+                env: Some(env),
+            },
+        )]);
         let proxy = ToolProxy::start(&cfg, &configured_tools)
             .await
             .unwrap()

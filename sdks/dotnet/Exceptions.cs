@@ -1,33 +1,33 @@
 using System;
 using System.Net;
 
-namespace AgentCell;
+namespace KekkaiRuntime;
 
-public class AgentCellException : Exception
+public class KekkaiRuntimeException : Exception
 {
-    internal AgentCellException(string message, string operation, Exception? innerException = null)
+    internal KekkaiRuntimeException(string message, string operation, Exception? innerException = null)
         : base(message, innerException) => Operation = operation;
 
     public string Operation { get; }
 }
 
-public sealed class AgentCellValidationException : AgentCellException
+public sealed class KekkaiRuntimeValidationException : KekkaiRuntimeException
 {
-    internal AgentCellValidationException(string message, string operation)
+    internal KekkaiRuntimeValidationException(string message, string operation)
         : base(message, operation) { }
 }
 
-public sealed class AgentCellProtocolException : AgentCellException
+public sealed class KekkaiRuntimeProtocolException : KekkaiRuntimeException
 {
-    internal AgentCellProtocolException(string message, string operation, object? details = null)
+    internal KekkaiRuntimeProtocolException(string message, string operation, object? details = null)
         : base(message, operation) => Details = details;
 
     public object? Details { get; }
 }
 
-public sealed class AgentCellHttpException : AgentCellException
+public sealed class KekkaiRuntimeHttpException : KekkaiRuntimeException
 {
-    internal AgentCellHttpException(
+    internal KekkaiRuntimeHttpException(
         string operation,
         HttpStatusCode statusCode,
         string? responseBody)
@@ -58,6 +58,6 @@ public sealed class AgentCellHttpException : AgentCellException
             }
         }
 
-        return $"AgentCell request failed with HTTP {(int)statusCode} ({statusCode}).";
+        return $"Kekkai Runtime request failed with HTTP {(int)statusCode} ({statusCode}).";
     }
 }

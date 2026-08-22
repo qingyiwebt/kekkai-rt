@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="AgentCell.csproj" />
-  <Project Path="tests/AgentCell.ProtocolTests/AgentCell.ProtocolTests.csproj" />
-</Solution>

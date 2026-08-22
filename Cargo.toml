@@ -1,6 +1,6 @@
 [package]
-name = "agent-cell"
-version = "0.1.2"
+name = "kekkai-rt"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]

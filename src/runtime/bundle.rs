@@ -115,7 +115,7 @@ pub(super) fn prepare_managed_bundle(
             path: cfg.rootfs_dir.to_string_lossy().into_owned(),
             readonly: false,
         },
-        hostname: "agent-cell",
+        hostname: "kekkai-rt",
         mounts,
         linux: OciLinux { namespaces },
     };
@@ -219,7 +219,7 @@ workspace_dir = "."
         let settings = cfg.network_settings().unwrap();
 
         let bundle =
-            prepare_managed_bundle(&cfg, &settings, Some("/run/netns/agentcellns"), None).unwrap();
+            prepare_managed_bundle(&cfg, &settings, Some("/run/netns/kekkai-rtns"), None).unwrap();
         let spec: Value =
             serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
         assert_eq!(spec["root"]["path"], rootfs.to_string_lossy().as_ref());
@@ -236,7 +236,7 @@ workspace_dir = "."
             .iter()
             .find(|namespace| namespace["type"] == "network")
             .unwrap();
-        assert_eq!(network_namespace["path"], "/run/netns/agentcellns");
+        assert_eq!(network_namespace["path"], "/run/netns/kekkai-rtns");
     }
 
     #[test]
@@ -250,7 +250,7 @@ workspace_dir = "."
         cfg.managed_bundle_dir = temp.path().join("bundle");
         let settings = cfg.network_settings().unwrap();
         let mounts = vec![ToolSocketMount {
-            source: temp.path().join("agentcell-tools.socket"),
+            source: temp.path().join("kekkai-rt-tools.socket"),
             destination: crate::proxy::SOCKET_DESTINATION,
         }];
 
@@ -265,7 +265,7 @@ workspace_dir = "."
                 mount["destination"]
                     .as_str()
                     .unwrap_or("")
-                    .starts_with("/run/agentcell-tools")
+                    .starts_with("/run/kekkai-rt-tools")
             })
             .collect::<Vec<_>>();
         assert_eq!(tool_mounts.len(), 1);

@@ -5,33 +5,33 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace AgentCell;
+namespace KekkaiRuntime;
 
-/// <summary>High-level AgentCell client for common execution and workspace workflows.</summary>
-public sealed class AgentCellClient : IDisposable
+/// <summary>High-level Kekkai Runtime client for common execution and workspace workflows.</summary>
+public sealed class KekkaiRuntimeClient : IDisposable
 {
-    private readonly AgentCellApiClient _api;
+    private readonly KekkaiRuntimeApiClient _api;
     private readonly bool _disposeApi;
 
     /// <summary>Creates a high-level client using an injected HttpClient.</summary>
-    public AgentCellClient(HttpClient httpClient, Uri baseUri, string token)
-        : this(new AgentCellApiClient(httpClient, baseUri, token), true)
+    public KekkaiRuntimeClient(HttpClient httpClient, Uri baseUri, string token)
+        : this(new KekkaiRuntimeApiClient(httpClient, baseUri, token), true)
     {
     }
 
     /// <summary>Creates a high-level client with an internally owned HttpClient.</summary>
-    public AgentCellClient(Uri baseUri, string token)
-        : this(new AgentCellApiClient(baseUri, token), true)
+    public KekkaiRuntimeClient(Uri baseUri, string token)
+        : this(new KekkaiRuntimeApiClient(baseUri, token), true)
     {
     }
 
     /// <summary>Creates a high-level client over an existing low-level API client.</summary>
-    public AgentCellClient(AgentCellApiClient apiClient)
+    public KekkaiRuntimeClient(KekkaiRuntimeApiClient apiClient)
         : this(apiClient, false)
     {
     }
 
-    private AgentCellClient(AgentCellApiClient apiClient, bool disposeApi)
+    private KekkaiRuntimeClient(KekkaiRuntimeApiClient apiClient, bool disposeApi)
     {
         _api = apiClient ?? throw new ArgumentNullException(nameof(apiClient));
         _disposeApi = disposeApi;
@@ -73,13 +73,13 @@ public sealed class AgentCellClient : IDisposable
 
         if (!terminal)
         {
-            throw new AgentCellProtocolException("SSE stream ended before a terminal event.", "executeAndWait");
+            throw new KekkaiRuntimeProtocolException("SSE stream ended before a terminal event.", "executeAndWait");
         }
 
         var snapshot = await _api.GetExecAsync(taskId, cancellationToken).ConfigureAwait(false);
         if (!snapshot.IsTerminal)
         {
-            throw new AgentCellProtocolException(
+            throw new KekkaiRuntimeProtocolException(
                 "Task snapshot is not terminal after a terminal event.",
                 "executeAndWait",
                 snapshot);
@@ -95,9 +95,9 @@ public sealed class AgentCellClient : IDisposable
 
 public sealed class WorkspaceClient
 {
-    private readonly AgentCellApiClient _api;
+    private readonly KekkaiRuntimeApiClient _api;
 
-    internal WorkspaceClient(AgentCellApiClient api) => _api = api;
+    internal WorkspaceClient(KekkaiRuntimeApiClient api) => _api = api;
 
     public Task<WorkspaceDirectory> ListAsync(
         string path = "",

@@ -1,4 +1,4 @@
-import { AgentCellError } from "./errors.js";
+import { KekkaiRuntimeError } from "./errors.js";
 import { decodeEvent, decodeSnapshot, decodeTaskId, encodeExecRequest } from "./protocol.js";
 import { parseSse } from "./sse.js";
 import { Transport, withSignal } from "./transport.js";
@@ -78,7 +78,7 @@ export class ExecutionClient implements ExecutionApi {
       }
     }
     if (!terminal) {
-      throw new AgentCellError("SSE stream ended before a terminal event", {
+      throw new KekkaiRuntimeError("SSE stream ended before a terminal event", {
         kind: "protocol",
         operation: "exec.wait",
       });
@@ -86,7 +86,7 @@ export class ExecutionClient implements ExecutionApi {
 
     const snapshot = await this.snapshot(taskId, options);
     if (!TERMINAL_STATUSES.has(snapshot.status)) {
-      throw new AgentCellError("task snapshot is not terminal after a terminal event", {
+      throw new KekkaiRuntimeError("task snapshot is not terminal after a terminal event", {
         kind: "protocol",
         operation: "exec.wait",
         details: snapshot,
@@ -172,8 +172,8 @@ function isTerminalEvent(event: ExecEvent): boolean {
   );
 }
 
-function validationError(message: string, operation: string): AgentCellError {
-  return new AgentCellError(message, {
+function validationError(message: string, operation: string): KekkaiRuntimeError {
+  return new KekkaiRuntimeError(message, {
     kind: "validation",
     operation,
   });
