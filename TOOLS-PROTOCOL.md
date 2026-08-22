@@ -1,6 +1,6 @@
 # AgentCell tool proxy protocol
 
-The proxy is enabled when the top-level `tools` table contains at least one entry. The configured key is the only command name that a container client may select:
+The proxy is enabled when the top-level `tools` table contains at least one entry. The configured key is selected by the basename of the executable inside the container:
 
 ```toml
 [tools.'something-cli']
@@ -10,102 +10,66 @@ env = "./for-something-cli.env"
 
 The env file is reread immediately before each tool process starts. It is never copied into the container.
 
-## Socket paths
+## Socket
 
-The sockets are available inside the container at:
+When tools are configured, AgentCell exposes one Unix socket inside the container:
 
 ```text
 /run/agentcell-tools.socket
-/run/agentcell-tools-stdout.socket
-/run/agentcell-tools-stderr.socket
-/run/agentcell-tools-status.socket
 ```
 
-Each integer is an unsigned 32-bit big-endian value. Each field is encoded as its length followed by that many bytes. Request ids and command names are UTF-8. Arguments and environment values are byte strings on Unix.
-
-## Submit and stdin
-
-The client connects to `agentcell-tools.socket` and sends:
+The socket uses a binary full-duplex protocol. Every frame is:
 
 ```text
-field(request id)
-u32(arg count)
-u32(env count)
-field(command/config key)
-field(arg 1) ... field(arg N)
-field(env key 1) field(env value 1) ... field(env key M) field(env value M)
-stdin bytes ...
+u8     frame type
+u32    payload length, big-endian
+bytes  payload
 ```
 
-The daemon starts the configured executable after the header is parsed. All remaining bytes are copied to its stdin while the submit connection stays open. The submit connection is also the lifetime guard for the tool: if the client closes or loses the connection before the tool exits, AgentCell terminates the entire tool process group. The submit socket does not send an acknowledgement.
+The maximum frame and field size is 1 MiB. A connection contains exactly one tool invocation and does not use a request id.
 
-The executable runs with an empty inherited environment. Values from the configured env file are added first; request env values are added afterward and therefore override matching keys.
+## Client frames
 
-## Output and status
+The first frame must be `OPEN` (`0x01`). Its payload is:
 
-For stdout or stderr, connect to the corresponding socket and send `field(request id)`. The daemon then returns raw bytes for that stream and closes the connection after the process exits and the stream is drained. Only one active reader is supported for each stream.
+```text
+field(command/config key)
+u32(argument count)
+field(argument 1) ... field(argument N)
+```
 
-For status, connect to `agentcell-tools-status.socket` and send `field(request id)`. The daemon waits for completion and returns the decimal exit code followed by `\n`. A process terminated by signal uses `128 + signal`. Unknown request ids and duplicate stream readers return an `ERR ...` line after the short registration wait.
+Each `field` is a big-endian u32 length followed by that many bytes. Command names are UTF-8; arguments are byte strings.
 
-## Shell + nc example
+The client then sends any number of:
 
-For normal command-line use, copy the repository's [`agentcell-tool-proxy`](agentcell-tool-proxy) under the configured command name:
+```text
+STDIN     0x02     raw stdin bytes
+STDIN_EOF 0x03     empty payload; closes the tool's stdin normally
+```
+
+The client must keep the connection open after `STDIN_EOF` while it receives the result. If the connection closes before the tool finishes, AgentCell kills the entire tool process group.
+
+## Server frames
+
+The server sends output as soon as it is available:
+
+```text
+STDOUT 0x10     raw stdout bytes
+STDERR 0x11     raw stderr bytes
+EXIT   0x12     signed i32 exit code, big-endian
+ERROR  0x13     UTF-8 diagnostic message
+```
+
+An `ERROR` frame is followed by an `EXIT` frame with code `127` when the request cannot be started or is invalid. A normal invocation ends with one `EXIT` frame and then the server closes the connection. A process terminated by signal uses `128 + signal`.
+
+## Go proxy
+
+The repository's `proxy/` directory contains a libc-independent Go client. Build or download the Linux amd64 binary, then copy or symlink it under every configured tool name:
 
 ```sh
-cp agentcell-tool-proxy something-cli
+cp agentcell-tool-proxy-x86_64-unknown-linux-gnu something-cli
 chmod +x something-cli
 ./something-cli arg1 arg2 < input.dat
 ```
 
-The wrapper derives `command` from its basename, so the renamed file must match a `[tools.'name']` key. It forwards the process arguments and stdin, mirrors both output streams, and exits with the status returned by the daemon. Because the submit connection is the lifetime guard, closing the wrapper's stdin also terminates the proxied tool.
-
-The following illustrates the framing helpers. `nc` must support Unix sockets with `-U`; the example uses text arguments and no request environment values.
-
-```sh
-#!/bin/sh
-
-id=${1:-request-1}
-command=${2:-something-cli}
-
-be32() {
-    n=$1
-    printf '%b' "\\$(printf '%03o' $(( (n >> 24) & 255 )))"
-    printf '%b' "\\$(printf '%03o' $(( (n >> 16) & 255 )))"
-    printf '%b' "\\$(printf '%03o' $(( (n >> 8) & 255 )))"
-    printf '%b' "\\$(printf '%03o' $(( n & 255 )))"
-}
-
-field() {
-    value=$1
-    be32 "${#value}"
-    printf '%s' "$value"
-}
-
-send_request() {
-    {
-        field "$id"
-        be32 0                 # argument count
-        be32 0                 # environment count
-        field "$command"
-        cat                    # stdin; EOF closes the write side
-    } | nc -U /run/agentcell-tools.socket &
-    submit_pid=$!
-}
-
-send_request <<'EOF'
-hello from the sandbox
-EOF
-
-field "$id" | nc -U /run/agentcell-tools-stdout.socket &
-stdout_pid=$!
-field "$id" | nc -U /run/agentcell-tools-stderr.socket &
-stderr_pid=$!
-
-wait "$submit_pid"
-wait "$stdout_pid"
-wait "$stderr_pid"
-exit_code=$(field "$id" | nc -U /run/agentcell-tools-status.socket)
-printf 'tool exit code: %s' "$exit_code"
-```
-
-For a production proxy, start the stdout/stderr readers before or immediately after submitting the request so that output can be consumed while the tool is running.
+The Go proxy has no dependency on shell utilities, `nc`, or the container's libc. It forwards stdin, stdout, stderr, and the host tool's exit code over the single socket. A local connection or protocol failure exits with code `125`.

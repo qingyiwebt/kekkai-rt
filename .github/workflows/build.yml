@@ -21,6 +21,12 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: proxy/go.mod
+          cache-dependency-path: proxy/go.mod
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
@@ -29,14 +35,29 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Test Go proxy
+        working-directory: proxy
+        run: |
+          go test ./...
+          go vet ./...
+
       - name: Build
         run: cargo build --locked --release --target x86_64-unknown-linux-gnu
+
+      - name: Build Go proxy
+        working-directory: proxy
+        run: |
+          mkdir -p ../dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" \
+            -o ../dist/agentcell-tool-proxy-x86_64-unknown-linux-gnu .
 
       - name: Prepare artifact
         run: |
           mkdir -p dist
           cp target/x86_64-unknown-linux-gnu/release/agent-cell dist/agent-cell-x86_64-unknown-linux-gnu
           sha256sum dist/agent-cell-x86_64-unknown-linux-gnu > dist/agent-cell-x86_64-unknown-linux-gnu.sha256
+          sha256sum dist/agentcell-tool-proxy-x86_64-unknown-linux-gnu > dist/agentcell-tool-proxy-x86_64-unknown-linux-gnu.sha256
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

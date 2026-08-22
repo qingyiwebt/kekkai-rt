@@ -249,12 +249,10 @@ workspace_dir = "."
         cfg.rootfs_dir = rootfs;
         cfg.managed_bundle_dir = temp.path().join("bundle");
         let settings = cfg.network_settings().unwrap();
-        let mounts = (0..4)
-            .map(|index| ToolSocketMount {
-                source: temp.path().join(format!("socket-{index}")),
-                destination: crate::proxy::SOCKET_DESTINATIONS[index],
-            })
-            .collect::<Vec<_>>();
+        let mounts = vec![ToolSocketMount {
+            source: temp.path().join("agentcell-tools.socket"),
+            destination: crate::proxy::SOCKET_DESTINATION,
+        }];
 
         let bundle = prepare_managed_bundle(&cfg, &settings, None, Some(&mounts)).unwrap();
         let spec: Value =
@@ -270,7 +268,7 @@ workspace_dir = "."
                     .starts_with("/run/agentcell-tools")
             })
             .collect::<Vec<_>>();
-        assert_eq!(tool_mounts.len(), 4);
+        assert_eq!(tool_mounts.len(), 1);
         assert!(tool_mounts.iter().all(|mount| mount["type"] == "bind"));
     }
 }

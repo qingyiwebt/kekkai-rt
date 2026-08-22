@@ -44,27 +44,24 @@ path = "./something-cli"
 env = "./for-something-cli.env"
 ```
 
-The executable and env file paths are resolved relative to `config.toml`. The env file uses dotenv-style `KEY=VALUE` lines and is reread for every request, so changes take effect on the next invocation. The host process clears the child environment before adding values from the env file and request-specific overrides.
+The executable and env file paths are resolved relative to `config.toml`. The env file uses dotenv-style `KEY=VALUE` lines and is reread for every request, so changes take effect on the next invocation. The host process clears the child environment before adding values from the env file.
 
-When at least one tool is configured, AgentCell maps these sockets into the container:
+When at least one tool is configured, AgentCell maps one Unix socket into the container:
 
 ```text
 /run/agentcell-tools.socket
-/run/agentcell-tools-stdout.socket
-/run/agentcell-tools-stderr.socket
-/run/agentcell-tools-status.socket
 ```
 
-The request socket accepts a length-prefixed binary header followed by streaming stdin. The submit connection is the tool's lifetime guard: if it closes before the tool exits, AgentCell terminates the tool process group. The stdout and stderr sockets return raw bytes for a request id, and the status socket returns the decimal exit code. A shell and Unix-capable `nc` are sufficient for a client; see [TOOLS-PROTOCOL.md](TOOLS-PROTOCOL.md) for the framing and an example.
+The single connection carries a binary request, streaming stdin, stdout, stderr, and the final exit code. It is also the tool's lifetime guard: if it closes before the tool exits, AgentCell terminates the entire tool process group. See [TOOLS-PROTOCOL.md](TOOLS-PROTOCOL.md) for the frame format.
 
-The repository also includes a ready-to-use wrapper, [agentcell-tool-proxy](agentcell-tool-proxy). Copy or symlink it under the configured tool name and make it executable:
+The repository contains a libc-independent Go proxy under [proxy/](proxy/). Copy or symlink its Linux amd64 release binary under the configured tool name and make it executable:
 
 ```sh
-cp agentcell-tool-proxy something-cli
+cp agentcell-tool-proxy-x86_64-unknown-linux-gnu something-cli
 chmod +x something-cli
 ```
 
-Running `something-cli arg1` then selects the `something-cli` entry, forwards the arguments and stdin, mirrors stdout/stderr, and exits with the host tool's status code.
+Running `something-cli arg1` then selects the `something-cli` entry, forwards all stdio, and exits with the host tool's status code.
 
 Run with:
 
