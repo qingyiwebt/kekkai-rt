@@ -1,6 +1,6 @@
 {
   "name": "@klrohias/kekkai-rt-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Modern Node.js SDK for the Kekkai Runtime sandbox service",
   "license": "MIT",
   "type": "module",
