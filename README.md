@@ -101,6 +101,10 @@ curl -H 'Authorization: Bearer replace-me' -H 'content-type: application/json' \
 
 Then consume `/v1/exec/{task_id}/events` as an SSE stream.
 
+To terminate a running execution, send an authenticated `DELETE` request to
+`/v1/exec/{task_id}`. The task then emits its terminal `finished` event with a
+null exit code after the child process has been killed.
+
 When `workspace_dir` is configured, workspace operations use the same Bearer token:
 
 ```sh

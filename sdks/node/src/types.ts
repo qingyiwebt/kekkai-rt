@@ -62,11 +62,13 @@ export interface ExecTask {
   events(options?: ExecTaskOptions): AsyncIterable<ExecEvent>;
   snapshot(options?: ExecTaskOptions): Promise<ExecSnapshot>;
   wait(options?: ExecWaitOptions): Promise<ExecResult>;
+  cancel(options?: ExecTaskOptions): Promise<void>;
 }
 
 export interface ExecutionApi {
   start(request: ExecRequest, options?: ExecStartOptions): Promise<ExecTask>;
   run(request: ExecRequest, options?: ExecRunOptions): Promise<ExecResult>;
+  cancel(taskId: string, options?: ExecTaskOptions): Promise<void>;
 }
 
 export interface HealthResponse {

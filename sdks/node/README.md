@@ -62,6 +62,9 @@ for await (const event of task.events()) {
 
 const snapshot = await task.snapshot();
 const result = await task.wait();
+
+// Stop a running task on the server and wait for its terminal event.
+await task.cancel();
 ```
 
 Event types include `started`, `stdout`, `stderr`, `finished`, `timedOut`, and `failed`. `wait()` and `run()` return the terminal status, including timeouts and failures.
@@ -115,6 +118,7 @@ Cancelling a client-side SSE or HTTP request does not automatically terminate an
 | `client.execute(request, options)` | `client.exec.run(request, options)` |
 | `client.getExec(taskId)` | `task.snapshot()` |
 | `client.events(taskId)` | `task.events()` |
+| — | `task.cancel()` / `client.exec.cancel(taskId)` |
 | `client.workspace.readFile(path)` | `client.workspace.read(path)` |
 | `client.workspace.writeFile(path, data)` | `client.workspace.write(path, data)` |
 | `client.workspace.delete(path)` | `client.workspace.remove(path)` |

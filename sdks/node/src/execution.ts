@@ -56,6 +56,15 @@ export class ExecutionClient implements ExecutionApi {
     return decodeSnapshot(body, "exec.snapshot");
   }
 
+  async cancel(taskId: string, options: ExecTaskOptions = {}): Promise<void> {
+    validateTaskId(taskId, "exec.cancel");
+    await this.transport.noContent(
+      "exec.cancel",
+      `v1/exec/${encodeURIComponent(taskId)}`,
+      withSignal({ method: "DELETE" }, options.signal),
+    );
+  }
+
   async *events(taskId: string, options: ExecTaskOptions = {}): AsyncIterable<ExecEvent> {
     validateTaskId(taskId, "exec.events");
     const body = await this.transport.stream(
@@ -112,6 +121,10 @@ class TaskHandle implements ExecTask {
 
   wait(options: ExecWaitOptions = {}): Promise<ExecResult> {
     return this.execution.wait(this.id, options);
+  }
+
+  cancel(options: ExecTaskOptions = {}): Promise<void> {
+    return this.execution.cancel(this.id, options);
   }
 }
 

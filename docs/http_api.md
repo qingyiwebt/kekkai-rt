@@ -44,6 +44,7 @@ Authorization: Bearer <api.token>
 | `GET` | `/healthz` | 健康检查 | 否 |
 | `POST` | `/v1/exec` | 创建异步执行任务 | 是 |
 | `GET` | `/v1/exec/{task_id}` | 获取任务快照 | 是 |
+| `DELETE` | `/v1/exec/{task_id}` | 请求终止执行任务 | 是 |
 | `GET` | `/v1/exec/{task_id}/events` | 订阅任务 SSE 事件 | 是 |
 | `GET` | `/v1/workspace` | 获取工作区根目录 | 是 |
 | `GET` | `/v1/workspace/{path}` | 获取目录或文件 | 是 |

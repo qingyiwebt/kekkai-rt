@@ -41,18 +41,22 @@ impl ExecutionService {
                 .unwrap_or(300)
                 .min(self.max_timeout.as_secs()),
         );
-        let (id, _, lease) = self.tasks.create().await;
+        let (id, _, lease, cancel) = self.tasks.create().await;
         let tasks = self.tasks.clone();
         let sandbox = self.sandbox.clone();
         tokio::spawn(async move {
             let _lease = lease;
-            run_task(tasks, sandbox, id, request, timeout).await;
+            run_task(tasks, sandbox, id, request, timeout, cancel).await;
         });
         Ok(id)
     }
 
     pub async fn snapshot(&self, id: Uuid) -> Option<TaskSnapshot> {
         self.tasks.snapshot(id).await
+    }
+
+    pub async fn cancel(&self, id: Uuid) -> bool {
+        self.tasks.cancel(id).await
     }
 
     pub async fn subscribe(
@@ -76,6 +80,7 @@ async fn run_task(
     id: Uuid,
     request: ExecRequest,
     timeout: Duration,
+    cancel: tokio::sync::oneshot::Receiver<()>,
 ) {
     info!(
         task_id = %id,
@@ -91,6 +96,7 @@ async fn run_task(
         Err(error) => {
             warn!(task_id = %id, error = %error, "failed to start execution task");
             tasks.publish(id, Event::Failed(error.to_string())).await;
+            tasks.clear_cancellation(id).await;
             return;
         }
     };
@@ -112,11 +118,27 @@ async fn run_task(
     let read_stdout = spawn_output_reader(id, tasks.clone(), stdout, false);
     let read_stderr = spawn_output_reader(id, tasks.clone(), stderr, true);
 
-    match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(Ok(status)) => {
+    let wait = async {
+        tokio::select! {
+            result = child.wait() => result.map(WaitOutcome::Finished),
+            _ = cancel => {
+                info!(task_id = %id, "execution task cancelled");
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                Ok(WaitOutcome::Cancelled)
+            }
+        }
+    };
+
+    match tokio::time::timeout(timeout, wait).await {
+        Ok(Ok(WaitOutcome::Finished(status))) => {
             await_output(read_stdout, read_stderr).await;
             info!(task_id = %id, exit_code = ?status.code(), "execution task finished");
             tasks.publish(id, Event::Finished(status.code())).await;
+        }
+        Ok(Ok(WaitOutcome::Cancelled)) => {
+            await_output(read_stdout, read_stderr).await;
+            tasks.publish(id, Event::Finished(None)).await;
         }
         Ok(Err(error)) => {
             warn!(task_id = %id, error = %error, "execution task failed while waiting");
@@ -131,6 +153,12 @@ async fn run_task(
             tasks.publish(id, Event::TimedOut).await;
         }
     }
+    tasks.clear_cancellation(id).await;
+}
+
+enum WaitOutcome {
+    Finished(std::process::ExitStatus),
+    Cancelled,
 }
 
 fn spawn_output_reader<R>(

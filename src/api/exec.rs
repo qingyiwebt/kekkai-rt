@@ -37,6 +37,19 @@ pub(super) async fn snapshot(
     }
 }
 
+pub(super) async fn cancel(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if state.execution.cancel(id).await {
+        StatusCode::NO_CONTENT.into_response()
+    } else if state.execution.snapshot(id).await.is_some() {
+        StatusCode::CONFLICT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
 pub(super) async fn events(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
-    sync::{broadcast, Notify, RwLock},
+    sync::{broadcast, oneshot, Notify, RwLock},
     task::JoinHandle,
 };
 use tracing::debug;
@@ -86,6 +86,7 @@ struct Task {
 #[derive(Clone)]
 pub struct TaskStore {
     inner: Arc<RwLock<HashMap<Uuid, Task>>>,
+    cancellations: Arc<RwLock<HashMap<Uuid, oneshot::Sender<()>>>>,
     active: Arc<ActiveTasks>,
     cleanup: Arc<CleanupSupervisor>,
 }
@@ -120,6 +121,7 @@ impl TaskStore {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
+            cancellations: Arc::new(RwLock::new(HashMap::new())),
             active: Arc::new(ActiveTasks {
                 count: std::sync::atomic::AtomicUsize::new(0),
                 idle: Notify::new(),
@@ -163,9 +165,17 @@ impl TaskStore {
             let _ = handle.await;
         }
     }
-    pub async fn create(&self) -> (Uuid, broadcast::Receiver<Event>, TaskLease) {
+    pub async fn create(
+        &self,
+    ) -> (
+        Uuid,
+        broadcast::Receiver<Event>,
+        TaskLease,
+        oneshot::Receiver<()>,
+    ) {
         let id = Uuid::new_v4();
         let (tx, rx) = broadcast::channel(128);
+        let (cancel_tx, cancel_rx) = oneshot::channel();
         let task = Task {
             snapshot: TaskSnapshot {
                 task_id: id,
@@ -181,6 +191,7 @@ impl TaskStore {
             expires: tokio::time::Instant::now() + Duration::from_secs(300),
         };
         self.inner.write().await.insert(id, task);
+        self.cancellations.write().await.insert(id, cancel_tx);
         self.active
             .count
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -190,7 +201,19 @@ impl TaskStore {
             TaskLease {
                 active: self.active.clone(),
             },
+            cancel_rx,
         )
+    }
+    pub async fn cancel(&self, id: Uuid) -> bool {
+        self.cancellations
+            .write()
+            .await
+            .remove(&id)
+            .map(|sender| sender.send(()).is_ok())
+            .unwrap_or(false)
+    }
+    pub async fn clear_cancellation(&self, id: Uuid) {
+        self.cancellations.write().await.remove(&id);
     }
     pub async fn publish(&self, id: Uuid, event: Event) {
         if let Some(t) = self.inner.write().await.get_mut(&id) {
@@ -257,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn completed_task_keeps_event_history_and_snapshot() {
         let store = TaskStore::new();
-        let (id, _, _lease) = store.create().await;
+        let (id, _, _lease, _cancel) = store.create().await;
         store.publish(id, Event::Started).await;
         store.publish(id, Event::Stdout("hello".into())).await;
         store.publish(id, Event::Finished(Some(0))).await;
@@ -273,9 +296,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_notifies_the_execution_task() {
+        let store = TaskStore::new();
+        let (id, _, _lease, cancel) = store.create().await;
+        assert!(store.cancel(id).await);
+        assert!(cancel.await.is_ok());
+        assert!(!store.cancel(id).await);
+    }
+
+    #[tokio::test]
     async fn shutdown_waits_until_task_lease_is_released() {
         let store = TaskStore::new();
-        let (_, _, lease) = store.create().await;
+        let (_, _, lease, _cancel) = store.create().await;
         let waiting = tokio::spawn({
             let store = store.clone();
             async move { store.wait_for_idle().await }

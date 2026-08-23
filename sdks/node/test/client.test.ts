@@ -229,3 +229,16 @@ test("passes AbortSignal through to task event streams", async () => {
 
   assert.equal(receivedSignal, controller.signal);
 });
+
+test("cancels an execution through the task endpoint", async () => {
+  const { fetch, calls } = fakeFetch((url, init) => {
+    if (url.endsWith("/v1/exec")) return jsonResponse({ task_id: "task-cancel" }, 202);
+    assert.equal(init?.method, "DELETE");
+    assert.ok(url.endsWith("/v1/exec/task-cancel"));
+    return new Response(null, { status: 204 });
+  });
+  const client = new KekkaiRuntimeClient({ baseUrl: "http://localhost:8080", token: "secret", fetch });
+  const task = await client.exec.start({ command: "/bin/sh" });
+  await task.cancel();
+  assert.equal(calls.length, 2);
+});

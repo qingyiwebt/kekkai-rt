@@ -43,7 +43,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/exec", post(exec::create))
-        .route("/v1/exec/:id", get(exec::snapshot))
+        .route("/v1/exec/:id", get(exec::snapshot).delete(exec::cancel))
         .route("/v1/exec/:id/events", get(exec::events))
         .route(
             "/v1/workspace",
