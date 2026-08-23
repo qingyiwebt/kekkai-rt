@@ -1,5 +1,5 @@
 {
-  "name": "@kekkai-rt/sdk",
+  "name": "@klrohias/kekkai-rt-sdk",
   "version": "0.2.0",
   "description": "Modern Node.js SDK for the Kekkai Runtime sandbox service",
   "license": "MIT",
@@ -7,6 +7,10 @@
   "packageManager": "pnpm@11.18.0",
   "engines": {
     "node": ">=20"
+  },
+  "author": {
+    "name": "qingyiwebt",
+    "url": "https://github.com/qingyiwebt"
   },
   "exports": {
     ".": {

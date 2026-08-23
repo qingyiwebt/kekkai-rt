@@ -2,15 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-cn.md)
 
-A modern Kekkai Runtime SDK for Node.js 20+. It uses native `fetch`, Web Streams, and ESM while hiding HTTP paths, `snake_case` fields, and SSE protocol details.
+面向 Node.js 20+ 的现代 Kekkai Runtime SDK。SDK 使用原生 `fetch`、Web Streams 和 ESM，隐藏 HTTP 路径、snake_case 字段以及 SSE 协议细节。
 
-## Installation
+## 安装
 
 ```sh
 pnpm add @klrohias/kekkai-rt-sdk
 ```
 
-## Create a client
+## 创建客户端
 
 ```ts
 import { KekkaiRuntimeClient } from "@klrohias/kekkai-rt-sdk";
@@ -23,9 +23,9 @@ const client = new KekkaiRuntimeClient({
 await client.health();
 ```
 
-## Execute a command
+## 执行命令
 
-`command` and `args` are passed to the container process as separate arguments; they are not automatically run through a shell.
+`command` 和 `args` 会作为独立参数传递给容器进程，不会自动经过 shell。
 
 ```ts
 const result = await client.exec.run(
@@ -48,7 +48,7 @@ const result = await client.exec.run(
 console.log({ status: result.status, exitCode: result.exitCode });
 ```
 
-For long-running tasks, you can first obtain a task object and then consume events with an async iterator:
+对于长时间运行的任务，可以先获取任务对象，再使用异步迭代器消费事件：
 
 ```ts
 const task = await client.exec.start({
@@ -64,11 +64,11 @@ const snapshot = await task.snapshot();
 const result = await task.wait();
 ```
 
-Event types include `started`, `stdout`, `stderr`, `finished`, `timedOut`, and `failed`. `wait()` and `run()` return the terminal status, including timeouts and failures.
+事件类型包括 `started`、`stdout`、`stderr`、`finished`、`timedOut` 和 `failed`。`wait()` 和 `run()` 返回终止状态，包括超时和失败。
 
-## Workspace files
+## 工作区文件
 
-Workspace paths must be ordinary paths relative to the Kekkai Runtime workspace root. Before sending a request, the SDK rejects `..`, empty path components, and disallowed root-directory operations.
+工作区路径必须是相对于 Kekkai Runtime 工作区根目录的普通路径。SDK 会在发送请求前拒绝 `..`、空路径组件以及不允许的根目录操作。
 
 ```ts
 const listing = await client.workspace.list("src");
@@ -80,11 +80,11 @@ await client.workspace.write("hello.txt", "hello");
 await client.workspace.remove("output.bin");
 ```
 
-`read()` always returns a `Uint8Array` to preserve binary data. `readText()` decodes using UTF-8, and string writes are also encoded as UTF-8.
+`read()` 始终返回 `Uint8Array` 以保留二进制数据；`readText()` 使用 UTF-8 解码，字符串写入也使用 UTF-8 编码。
 
-## Error handling
+## 错误处理
 
-The SDK exposes only `KekkaiRuntimeError`:
+SDK 对外只暴露 `KekkaiRuntimeError`：
 
 ```ts
 import { KekkaiRuntimeError } from "@klrohias/kekkai-rt-sdk";
@@ -98,18 +98,18 @@ try {
 }
 ```
 
-`error.kind` can be:
+`error.kind` 可能是：
 
-- `validation`: local argument validation failed;
-- `http`: the server returned an HTTP error or the network request failed;
-- `protocol`: the server response did not conform to the Kekkai Runtime protocol;
-- `aborted`: the request was cancelled by an `AbortSignal`.
+- `validation`：本地参数校验失败；
+- `http`：服务端返回 HTTP 错误或网络请求失败；
+- `protocol`：服务端响应格式不符合 Kekkai Runtime 协议；
+- `aborted`：请求被 `AbortSignal` 取消。
 
-Cancelling a client-side SSE or HTTP request does not automatically terminate an execution task that has already been submitted to the server.
+取消客户端的 SSE 或 HTTP 请求不会自动终止已经提交到服务端的执行任务。
 
-## Migrate from the legacy API
+## 从旧 API 迁移
 
-| Legacy API | New API |
+| 旧 API | 新 API |
 | --- | --- |
 | `client.createExec({ argv, stdin, timeoutSeconds })` | `client.exec.start({ command, args, input, timeoutMs })` |
 | `client.execute(request, options)` | `client.exec.run(request, options)` |
@@ -120,9 +120,9 @@ Cancelling a client-side SSE or HTTP request does not automatically terminate an
 | `client.workspace.delete(path)` | `client.workspace.remove(path)` |
 | `KekkaiRuntimeHttpError`、`KekkaiRuntimeProtocolError`、`KekkaiRuntimeValidationError` | `KekkaiRuntimeError` |
 
-Protocol-oriented legacy methods and error subclasses are no longer exported from the package entry point.
+旧协议导向方法和错误子类不再从包入口导出。
 
-## Development
+## 开发
 
 ```sh
 CI=true pnpm check
