@@ -9,8 +9,21 @@ permissions:
 
 jobs:
   build:
-    name: Build x86_64 Linux binary
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.target }} Linux binaries
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            goarch: amd64
+            file_arch: x86-64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            goarch: arm64
+            file_arch: ARM aarch64
 
     steps:
       - name: Checkout
@@ -19,18 +32,34 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: ${{ matrix.target }}
 
       - name: Install Go
+        id: go
         uses: actions/setup-go@v5
         with:
           go-version-file: sdks/proxy/go.mod
-          cache-dependency-path: sdks/proxy/go.mod
+          cache: false
+
+      - name: Resolve Go cache paths
+        id: go-cache-paths
+        shell: bash
+        run: |
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.mod }}
+            ${{ steps.go-cache-paths.outputs.build }}
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('sdks/proxy/go.mod', 'sdks/proxy/go.sum') }}
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: x86_64-unknown-linux-gnu
+          shared-key: ${{ matrix.target }}
 
       - name: Test
         run: cargo test --locked
@@ -42,27 +71,32 @@ jobs:
           go vet ./...
 
       - name: Build
-        run: cargo build --locked --release --target x86_64-unknown-linux-gnu
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Build Go proxy
         working-directory: sdks/proxy
         run: |
           mkdir -p ../../dist
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
             go build -trimpath -ldflags="-s -w" \
-            -o ../../dist/kekkai-rt-tool-proxy-x86_64-unknown-linux-gnu .
+            -o ../../dist/kekkai-rt-tool-proxy-${{ matrix.target }} .
 
       - name: Prepare artifact
         run: |
           mkdir -p dist
-          cp target/x86_64-unknown-linux-gnu/release/kekkai-rt dist/kekkai-rt-x86_64-unknown-linux-gnu
-          sha256sum dist/kekkai-rt-x86_64-unknown-linux-gnu > dist/kekkai-rt-x86_64-unknown-linux-gnu.sha256
-          sha256sum dist/kekkai-rt-tool-proxy-x86_64-unknown-linux-gnu > dist/kekkai-rt-tool-proxy-x86_64-unknown-linux-gnu.sha256
+          binary="kekkai-rt-${{ matrix.target }}"
+          proxy="kekkai-rt-tool-proxy-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/kekkai-rt" "dist/$binary"
+          sha256sum "dist/$binary" > "dist/$binary.sha256"
+          sha256sum "dist/$proxy" > "dist/$proxy.sha256"
+          sha256sum -c "dist/$binary.sha256"
+          sha256sum -c "dist/$proxy.sha256"
+          file "dist/$binary" "dist/$proxy" | grep -F "${{ matrix.file_arch }}"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kekkai-rt-x86_64-unknown-linux-gnu
+          name: kekkai-rt-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
