@@ -44,7 +44,7 @@ pub(crate) async fn inspect(config: &Config) -> CheckReport {
         failures: 0,
     };
 
-    let sysroot_issues = sysroot::sysroot_issues(&config.sandbox);
+    let sysroot_issues = sysroot::sysroot_issues(&config.sandbox, &config.mounts);
     if sysroot_issues.is_empty() {
         report
             .lines

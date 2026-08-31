@@ -1,134 +1,267 @@
-use anyhow::{bail, ensure};
+use anyhow::{bail, ensure, Context};
 use flate2::read::GzDecoder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    cmp::Ordering,
-    fs,
-    io::{self, Read, Write},
-    path::{Component, Path},
+    collections::BTreeMap,
+    fs::{self, File},
+    io::{self, Read},
+    path::{Component, Path, PathBuf},
 };
 use tar::Archive;
 use uuid::Uuid;
 
-pub(crate) fn alpine_architecture() -> anyhow::Result<&'static str> {
-    match std::env::consts::ARCH {
-        "x86_64" => Ok("x86_64"),
-        "x86" => Ok("x86"),
-        "aarch64" => Ok("aarch64"),
-        "arm" => Ok("armv7"),
-        "riscv64" => Ok("riscv64"),
-        "s390x" => Ok("s390x"),
-        "powerpc64le" => Ok("ppc64le"),
-        "loongarch64" => Ok("loongarch64"),
-        architecture => bail!(
-            "unsupported host architecture {architecture}; Alpine init has no matching minirootfs"
-        ),
-    }
+#[derive(Debug, Deserialize)]
+struct OciIndex {
+    manifests: Vec<Descriptor>,
 }
 
-pub(crate) fn validate_version(version: &str) -> anyhow::Result<()> {
-    ensure!(
-        !version.is_empty()
-            && version
-                .split('.')
-                .all(|part| !part.is_empty()
-                    && part.chars().all(|character| character.is_ascii_digit())),
-        "invalid Alpine version {version:?}; expected a stable version such as 3.24.1"
+#[derive(Debug, Deserialize)]
+struct OciManifest {
+    config: Descriptor,
+    layers: Vec<Descriptor>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Descriptor {
+    #[serde(rename = "mediaType")]
+    media_type: Option<String>,
+    digest: String,
+    #[serde(default)]
+    platform: Option<Platform>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Platform {
+    os: String,
+    architecture: String,
+}
+
+#[derive(Serialize)]
+struct GeneratedConfig {
+    api: GeneratedApiConfig,
+    sandbox: GeneratedSandboxConfig,
+    mounts: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct GeneratedApiConfig {
+    listen_addr: String,
+    token: String,
+}
+
+#[derive(Serialize)]
+struct GeneratedSandboxConfig {
+    rootfs_dir: String,
+    backend: String,
+    max_timeout_seconds: u64,
+    network_mode: String,
+    network_bridge: String,
+    network_subnet: String,
+    network_gateway: String,
+    network_ip: String,
+    network_dns: Vec<String>,
+}
+
+pub(crate) fn generated_config(rootfs: &Path, workspace: &Path) -> anyhow::Result<String> {
+    let mut mounts = BTreeMap::new();
+    mounts.insert(
+        "/workspace".into(),
+        workspace.to_string_lossy().into_owned(),
     );
+    let config = GeneratedConfig {
+        api: GeneratedApiConfig {
+            listen_addr: "0.0.0.0:8080".into(),
+            token: Uuid::new_v4().as_simple().to_string(),
+        },
+        sandbox: GeneratedSandboxConfig {
+            rootfs_dir: rootfs.to_string_lossy().into_owned(),
+            backend: "runsc".into(),
+            max_timeout_seconds: 300,
+            network_mode: "nat".into(),
+            network_bridge: "kekkai-rt0".into(),
+            network_subnet: "10.200.0.0/24".into(),
+            network_gateway: "10.200.0.1".into(),
+            network_ip: "10.200.0.2".into(),
+            network_dns: vec!["1.1.1.1".into(), "8.8.8.8".into()],
+        },
+        mounts,
+    };
+    Ok(format!("{}\n", toml::to_string_pretty(&config)?))
+}
+
+pub(crate) fn extract_oci_image(image: &Path, destination: &Path) -> anyhow::Result<()> {
+    if image.is_dir() {
+        return apply_layout(image, destination);
+    }
+
+    let layout = destination
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(".kekkai-rt-oci-{}", Uuid::new_v4()));
+    fs::create_dir(&layout)
+        .with_context(|| format!("create OCI archive staging directory {}", layout.display()))?;
+    let result = extract_archive(image, &layout).and_then(|_| apply_layout(&layout, destination));
+    let cleanup_result = fs::remove_dir_all(&layout);
+    if let Err(error) = result {
+        let _ = cleanup_result;
+        return Err(error);
+    }
+    cleanup_result.context("remove OCI archive staging directory")?;
     Ok(())
 }
 
-pub(crate) fn latest_artifact_from_index(
-    index: &str,
-    architecture: &str,
-) -> anyhow::Result<(String, String)> {
-    let suffix = format!("-{architecture}.tar.gz");
-    let mut candidates = index
-        .split(|character: char| character.is_whitespace() || character == '"' || character == '\'')
-        .filter_map(|token| {
-            let version = token
-                .strip_prefix("alpine-minirootfs-")?
-                .strip_suffix(&suffix)?;
-            if validate_version(version).is_err() {
-                return None;
-            }
-            Some((version.to_owned(), token.to_owned()))
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| compare_versions(&left.0, &right.0));
-    candidates.pop().ok_or_else(|| {
-        anyhow::anyhow!("Alpine release index contains no stable minirootfs for {architecture}")
-    })
-}
-
-fn compare_versions(left: &str, right: &str) -> Ordering {
-    let left = left
-        .split('.')
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect::<Vec<_>>();
-    let right = right
-        .split('.')
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect::<Vec<_>>();
-    (0..left.len().max(right.len()))
-        .map(|index| {
-            (
-                left.get(index).copied().unwrap_or(0),
-                right.get(index).copied().unwrap_or(0),
-            )
-        })
-        .find_map(|(left, right)| match left.cmp(&right) {
-            Ordering::Equal => None,
-            ordering => Some(ordering),
-        })
-        .unwrap_or(Ordering::Equal)
-}
-
-pub(crate) fn parse_checksum(content: &str) -> anyhow::Result<String> {
-    let checksum = content
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("checksum file is empty"))?;
+fn apply_layout(layout: &Path, destination: &Path) -> anyhow::Result<()> {
+    let index: OciIndex = read_json(&layout.join("index.json"))
+        .with_context(|| format!("read OCI image index {}", layout.display()))?;
+    let descriptor = select_platform(&index.manifests)?;
     ensure!(
-        checksum.len() == 64
-            && checksum
-                .chars()
-                .all(|character| character.is_ascii_hexdigit()),
-        "checksum file does not contain a SHA256 digest"
+        descriptor
+            .media_type
+            .as_deref()
+            .map(|value| value.contains("image.manifest"))
+            .unwrap_or(true),
+        "selected OCI descriptor is not an image manifest"
     );
-    Ok(checksum.to_ascii_lowercase())
+    let manifest: OciManifest =
+        read_blob_json(layout, &descriptor.digest).context("read OCI image manifest")?;
+    ensure!(
+        manifest
+            .config
+            .media_type
+            .as_deref()
+            .map(|value| value.contains("image.config"))
+            .unwrap_or(true),
+        "OCI manifest config descriptor is invalid"
+    );
+    verify_blob(layout, &manifest.config.digest).context("verify OCI image config")?;
+
+    for layer in manifest.layers {
+        verify_blob(layout, &layer.digest)
+            .with_context(|| format!("verify OCI layer {}", layer.digest))?;
+        apply_layer(layout, &layer, destination)
+            .with_context(|| format!("apply OCI layer {}", layer.digest))?;
+    }
+    Ok(())
 }
 
-pub(crate) fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
-    let mut file = fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let length = file.read(&mut buffer)?;
-        if length == 0 {
-            break;
+fn select_platform(manifests: &[Descriptor]) -> anyhow::Result<&Descriptor> {
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "x86" => "386",
+        "aarch64" => "arm64",
+        "arm" => "arm",
+        other => other,
+    };
+    if let Some(descriptor) = manifests.iter().find(|descriptor| {
+        descriptor
+            .platform
+            .as_ref()
+            .is_some_and(|platform| platform.os == "linux" && platform.architecture == architecture)
+    }) {
+        return Ok(descriptor);
+    }
+    if manifests.len() == 1 && manifests[0].platform.is_none() {
+        return Ok(&manifests[0]);
+    }
+    bail!("OCI image has no linux/{architecture} manifest")
+}
+
+fn apply_layer(layout: &Path, descriptor: &Descriptor, destination: &Path) -> anyhow::Result<()> {
+    let path = blob_path(layout, &descriptor.digest)?;
+    let file = File::open(&path)?;
+    let reader: Box<dyn Read> = match descriptor.media_type.as_deref() {
+        Some("application/vnd.oci.image.layer.v1.tar+gzip")
+        | Some("application/vnd.docker.image.rootfs.diff.tar.gzip") => {
+            Box::new(GzDecoder::new(file))
         }
-        digest.update(&buffer[..length]);
+        Some("application/vnd.oci.image.layer.v1.tar+zstd") => {
+            Box::new(zstd::stream::read::Decoder::new(file).context("create zstd layer decoder")?)
+        }
+        Some("application/vnd.oci.image.layer.v1.tar")
+        | Some("application/vnd.docker.image.rootfs.diff.tar")
+        | None => Box::new(file),
+        Some(media_type) => bail!("unsupported OCI layer media type {media_type}"),
+    };
+    let mut archive = Archive::new(reader);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        validate_archive_path(&path)?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let parent = path.parent().unwrap_or_else(|| Path::new(""));
+        let target_parent = destination.join(parent);
+        if file_name == ".wh..wh..opq" {
+            remove_children(&target_parent)?;
+        } else if let Some(name) = file_name.strip_prefix(".wh.") {
+            ensure!(!name.is_empty(), "OCI whiteout has an empty target");
+            remove_path(&target_parent.join(name))?;
+        } else {
+            entry.unpack_in(destination)?;
+        }
     }
-    let actual = format!("{:x}", digest.finalize());
-    ensure!(
-        actual == expected,
-        "SHA256 mismatch: expected {expected}, got {actual}"
-    );
     Ok(())
 }
 
-pub(crate) fn extract_archive(archive_path: &Path, destination: &Path) -> anyhow::Result<()> {
-    let archive = fs::File::open(archive_path)?;
-    let decoder = GzDecoder::new(archive);
-    let mut archive = Archive::new(decoder);
+fn extract_archive(archive_path: &Path, destination: &Path) -> anyhow::Result<()> {
+    let archive = File::open(archive_path)
+        .with_context(|| format!("open OCI image archive {}", archive_path.display()))?;
+    let mut archive = Archive::new(archive);
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
         validate_archive_path(&path)?;
         entry.unpack_in(destination)?;
     }
+    Ok(())
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<T> {
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
+fn read_blob_json<T: for<'de> Deserialize<'de>>(layout: &Path, digest: &str) -> anyhow::Result<T> {
+    let path = blob_path(layout, digest)?;
+    verify_blob(layout, digest)?;
+    read_json(&path)
+}
+
+fn blob_path(layout: &Path, digest: &str) -> anyhow::Result<PathBuf> {
+    let (algorithm, value) = digest
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("OCI digest is missing its algorithm: {digest}"))?;
+    ensure!(
+        algorithm == "sha256",
+        "unsupported OCI digest algorithm {algorithm}"
+    );
+    ensure!(
+        value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit()),
+        "invalid OCI SHA256 digest {digest}"
+    );
+    Ok(layout.join("blobs").join(algorithm).join(value))
+}
+
+fn verify_blob(layout: &Path, digest: &str) -> anyhow::Result<()> {
+    let path = blob_path(layout, digest)?;
+    let mut file =
+        File::open(&path).with_context(|| format!("open OCI blob {}", path.display()))?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let length = file.read(&mut buffer)?;
+        if length == 0 {
+            break;
+        }
+        hash.update(&buffer[..length]);
+    }
+    let actual = format!("sha256:{:x}", hash.finalize());
+    ensure!(
+        actual == digest,
+        "OCI blob digest mismatch: expected {digest}, got {actual}"
+    );
     Ok(())
 }
 
@@ -148,52 +281,25 @@ pub(crate) fn validate_archive_path(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Serialize)]
-struct GeneratedConfig {
-    api: GeneratedApiConfig,
-    sandbox: GeneratedSandboxConfig,
+fn remove_path(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
-#[derive(Serialize)]
-struct GeneratedApiConfig {
-    listen_addr: String,
-    token: String,
-}
-
-#[derive(Serialize)]
-struct GeneratedSandboxConfig {
-    rootfs_dir: String,
-    workspace_dir: String,
-    backend: String,
-    max_timeout_seconds: u64,
-    network_mode: String,
-    network_bridge: String,
-    network_subnet: String,
-    network_gateway: String,
-    network_ip: String,
-    network_dns: Vec<String>,
-}
-
-pub(crate) fn generated_config(rootfs: &Path, workspace: &Path) -> anyhow::Result<String> {
-    let config = GeneratedConfig {
-        api: GeneratedApiConfig {
-            listen_addr: "0.0.0.0:8080".into(),
-            token: Uuid::new_v4().as_simple().to_string(),
-        },
-        sandbox: GeneratedSandboxConfig {
-            rootfs_dir: rootfs.to_string_lossy().into_owned(),
-            workspace_dir: workspace.to_string_lossy().into_owned(),
-            backend: "runsc".into(),
-            max_timeout_seconds: 300,
-            network_mode: "nat".into(),
-            network_bridge: "kekkai-rt0".into(),
-            network_subnet: "10.200.0.0/24".into(),
-            network_gateway: "10.200.0.1".into(),
-            network_ip: "10.200.0.2".into(),
-            network_dns: vec!["1.1.1.1".into(), "8.8.8.8".into()],
-        },
+fn remove_children(path: &Path) -> io::Result<()> {
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
     };
-    Ok(format!("{}\n", toml::to_string_pretty(&config)?))
+    for entry in entries {
+        remove_path(&entry?.path())?;
+    }
+    Ok(())
 }
 
 pub(crate) fn write_config_if_missing(path: &Path, content: &str) -> anyhow::Result<bool> {
@@ -210,7 +316,7 @@ pub(crate) fn write_config_if_missing(path: &Path, content: &str) -> anyhow::Res
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    if let Err(error) = file.write_all(content.as_bytes()) {
+    if let Err(error) = io::Write::write_all(&mut file, content.as_bytes()) {
         let _ = fs::remove_file(path);
         return Err(error.into());
     }

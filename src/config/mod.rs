@@ -4,7 +4,7 @@ mod runtime;
 use serde::Deserialize;
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -17,6 +17,8 @@ pub use network::{NetworkMode, NetworkSettings};
 pub struct Config {
     pub api: ApiConfig,
     pub sandbox: SandboxConfig,
+    #[serde(default)]
+    pub mounts: BTreeMap<PathBuf, PathBuf>,
     #[serde(default)]
     pub tools: HashMap<String, ToolConfig>,
 }
@@ -38,8 +40,6 @@ pub struct ToolConfig {
 #[serde(deny_unknown_fields)]
 pub struct SandboxConfig {
     pub rootfs_dir: PathBuf,
-    #[serde(default)]
-    pub workspace_dir: Option<PathBuf>,
     #[serde(default = "default_backend")]
     pub backend: String,
     #[serde(default = "default_timeout")]
@@ -114,6 +114,10 @@ pub enum ConfigError {
     InvalidToolName { name: String },
     #[error("invalid sandbox network configuration: {0}")]
     InvalidNetwork(String),
+    #[error("mount destination must be an absolute normal path: {0}")]
+    InvalidMountDestination(PathBuf),
+    #[error("mount destination conflicts with a runtime mount: {0}")]
+    ReservedMountDestination(PathBuf),
 }
 
 impl Config {
@@ -134,11 +138,14 @@ impl Config {
             }
             Err(error) => return Err(ConfigError::Io(error)),
         };
-        config.sandbox.workspace_dir = config
-            .sandbox
-            .workspace_dir
-            .take()
-            .map(|dir| resolve_path(&config_dir, dir));
+        config.mounts = config
+            .mounts
+            .into_iter()
+            .map(|(destination, source)| {
+                validate_mount_destination(&destination)?;
+                Ok((destination, resolve_path(&config_dir, source)))
+            })
+            .collect::<Result<_, ConfigError>>()?;
         config.sandbox.managed_bundle_dir = config_dir.join("bundle");
 
         for (name, tool) in &mut config.tools {
@@ -202,6 +209,36 @@ impl Config {
     }
 }
 
+fn validate_mount_destination(path: &Path) -> Result<(), ConfigError> {
+    let valid = path.is_absolute()
+        && path != Path::new("/")
+        && path
+            .components()
+            .skip(1)
+            .all(|component| matches!(component, std::path::Component::Normal(_)));
+    if !valid {
+        return Err(ConfigError::InvalidMountDestination(path.to_path_buf()));
+    }
+
+    const RESERVED: &[&str] = &[
+        "/proc",
+        "/sys",
+        "/dev",
+        "/dev/pts",
+        "/dev/shm",
+        "/dev/mqueue",
+        "/run",
+        "/sys/fs/cgroup",
+    ];
+    if RESERVED.iter().any(|reserved| {
+        let reserved = Path::new(reserved);
+        path == reserved || path.starts_with(reserved)
+    }) {
+        return Err(ConfigError::ReservedMountDestination(path.to_path_buf()));
+    }
+    Ok(())
+}
+
 fn resolve_path(base: &Path, path: PathBuf) -> PathBuf {
     if path.is_absolute() {
         path
@@ -223,12 +260,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_defaults_to_none() {
-        let config: SandboxConfig = toml::from_str("rootfs_dir = \".\"").unwrap();
-        assert!(config.workspace_dir.is_none());
-    }
-
-    #[test]
     fn config_file_without_parent_uses_current_directory() {
         let current_dir = fs::canonicalize(".").unwrap();
         assert_eq!(
@@ -238,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn load_resolves_paths_relative_to_config_file_without_preparing_workspace() {
+    fn load_resolves_mount_paths_relative_to_config_file_without_preparing_sources() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("rootfs")).unwrap();
         let config_path = temp.path().join("config.toml");
@@ -251,7 +282,9 @@ token = "secret"
 
 [sandbox]
 rootfs_dir = "rootfs"
-workspace_dir = "workspace"
+
+[mounts]
+"/workspace" = "workspace"
 "#,
         )
         .unwrap();
@@ -260,8 +293,8 @@ workspace_dir = "workspace"
         let config_dir = fs::canonicalize(temp.path()).unwrap();
         assert_eq!(config.sandbox.rootfs_dir, config_dir.join("rootfs"));
         assert_eq!(
-            config.sandbox.workspace_dir,
-            Some(config_dir.join("workspace"))
+            config.mounts.get(&PathBuf::from("/workspace")),
+            Some(&config_dir.join("workspace"))
         );
         assert_eq!(config.sandbox.managed_bundle_dir, config_dir.join("bundle"));
         assert!(!temp.path().join("workspace").exists());
@@ -355,5 +388,44 @@ bundle_dir = "."
             Config::load(&config_path),
             Err(ConfigError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn old_workspace_configuration_is_rejected() {
+        let parsed: Result<SandboxConfig, _> = toml::from_str(
+            r#"
+rootfs_dir = "."
+workspace_dir = "./workspace"
+"#,
+        );
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn mount_destinations_must_be_safe_absolute_paths() {
+        let mut config: Config = toml::from_str(
+            r#"
+[api]
+listen_addr = "127.0.0.1:0"
+token = "secret"
+
+[sandbox]
+rootfs_dir = "."
+
+[mounts]
+"relative" = "/tmp/source"
+"#,
+        )
+        .unwrap();
+        let error = config
+            .mounts
+            .keys()
+            .next()
+            .map(|path| validate_mount_destination(path))
+            .unwrap();
+        assert!(error.is_err());
+        config.mounts.clear();
+        assert!(validate_mount_destination(Path::new("/proc")).is_err());
+        assert!(validate_mount_destination(Path::new("/safe/path")).is_ok());
     }
 }

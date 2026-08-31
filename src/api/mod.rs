@@ -28,10 +28,14 @@ impl AppState {
             .resolved()
             .map(|settings| settings.max_timeout)
             .unwrap_or_else(|_| std::time::Duration::from_secs(config.sandbox.max_timeout_seconds));
+        let workspace = config
+            .mounts
+            .get(std::path::Path::new("/workspace"))
+            .cloned();
         Self {
             auth_token: Arc::from(config.api.token),
             execution: Arc::new(ExecutionService::new(sandbox, max_timeout)),
-            workspace: WorkspaceService::new(config.sandbox.workspace_dir),
+            workspace: WorkspaceService::new(workspace),
         }
     }
 
@@ -72,7 +76,10 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use http::Request;
-    use std::{collections::HashMap, sync::Arc};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        sync::Arc,
+    };
     use tempfile::tempdir;
     use tower::ServiceExt;
 
@@ -89,6 +96,7 @@ rootfs_dir = "."
                 token: "secret".into(),
             },
             sandbox,
+            mounts: BTreeMap::new(),
             tools: HashMap::new(),
         };
         AppState::new(config, Arc::new(Sandbox::test_instance()))
@@ -142,19 +150,24 @@ rootfs_dir = "."
     #[tokio::test]
     async fn workspace_routes_use_the_same_auth_layer() {
         let temp = tempdir().unwrap();
-        let mut sandbox: crate::config::SandboxConfig = toml::from_str(
+        let sandbox: crate::config::SandboxConfig = toml::from_str(
             r#"
 rootfs_dir = "."
 "#,
         )
         .unwrap();
-        sandbox.workspace_dir = Some(temp.path().to_path_buf());
+        let mut mounts = BTreeMap::new();
+        mounts.insert(
+            std::path::PathBuf::from("/workspace"),
+            temp.path().to_path_buf(),
+        );
         let config = Config {
             api: crate::config::ApiConfig {
                 listen_addr: "127.0.0.1:0".parse().unwrap(),
                 token: "secret".into(),
             },
             sandbox,
+            mounts,
             tools: HashMap::new(),
         };
         let app = router(AppState::new(config, Arc::new(Sandbox::test_instance())));

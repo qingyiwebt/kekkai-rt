@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn runsc_disables_temporary_rootfs_overlay() {
-        let runtime = RuntimeClient::new("runsc", "kekkai-rt", false, true);
+        let runtime = RuntimeClient::new("runsc", "kekkai-rt-abcd1234", false, true);
         assert_eq!(
             run_args(
                 runtime.allow_host_uds,
@@ -222,7 +222,13 @@ mod tests {
                 std::path::Path::new("/bundle"),
                 &runtime.container_id,
             ),
-            vec!["--overlay2=none", "run", "--bundle", "/bundle", "kekkai-rt"]
+            vec![
+                "--overlay2=none",
+                "run",
+                "--bundle",
+                "/bundle",
+                "kekkai-rt-abcd1234",
+            ]
         );
     }
 }

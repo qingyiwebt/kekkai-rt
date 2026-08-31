@@ -4,28 +4,38 @@ use std::{ffi::OsStr, process::Output};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-const HOST_VETH: &str = "kekkai-rtv";
-const NETNS_NAME: &str = "kekkai-rtns";
-const NETNS_PATH: &str = "/run/netns/kekkai-rtns";
-
 pub(super) struct NetworkSession {
     namespace_path: Option<String>,
+    host_veth: Option<String>,
+    netns_name: Option<String>,
 }
 
 impl NetworkSession {
-    pub(super) async fn prepare(settings: &NetworkSettings) -> anyhow::Result<Self> {
-        cleanup_session().await;
+    pub(super) async fn prepare(
+        settings: &NetworkSettings,
+        instance_id: &str,
+    ) -> anyhow::Result<Self> {
+        let host_veth = format!(
+            "kc-v-{}",
+            &instance_id[instance_id.len().saturating_sub(10)..]
+        );
+        let netns_name = format!("kekkai-rt-ns-{instance_id}");
+        cleanup_resources(&host_veth, &netns_name).await;
         if !matches!(settings.mode, NetworkMode::Nat) {
             return Ok(Self {
                 namespace_path: None,
+                host_veth: None,
+                netns_name: None,
             });
         }
 
         ensure_bridge(settings).await?;
         ensure_nat_rules(settings).await?;
-        prepare_nat(settings).await?;
+        prepare_nat(settings, &host_veth, &netns_name).await?;
         Ok(Self {
-            namespace_path: Some(NETNS_PATH.into()),
+            namespace_path: Some(format!("/run/netns/{netns_name}")),
+            host_veth: Some(host_veth),
+            netns_name: Some(netns_name),
         })
     }
 
@@ -49,13 +59,18 @@ impl NetworkSession {
     }
 
     pub(super) async fn cleanup(self) -> anyhow::Result<()> {
-        cleanup_session().await;
+        if let (Some(host_veth), Some(netns_name)) = (self.host_veth, self.netns_name) {
+            cleanup_resources(&host_veth, &netns_name).await;
+        }
         Ok(())
     }
 }
 
-pub(super) async fn prepare_network(settings: &NetworkSettings) -> anyhow::Result<NetworkSession> {
-    NetworkSession::prepare(settings).await
+pub(super) async fn prepare_network(
+    settings: &NetworkSettings,
+    instance_id: &str,
+) -> anyhow::Result<NetworkSession> {
+    NetworkSession::prepare(settings, instance_id).await
 }
 
 pub(super) async fn configure_network(
@@ -70,14 +85,14 @@ pub(super) async fn configure_network(
         .await
 }
 
-/*
- * Keep the old free-function cleanup entry point for startup recovery and
- * maintenance of a stale session left by an interrupted process.
- */
-async fn prepare_nat(settings: &NetworkSettings) -> anyhow::Result<()> {
+async fn prepare_nat(
+    settings: &NetworkSettings,
+    host_veth: &str,
+    netns_name: &str,
+) -> anyhow::Result<()> {
     run_checked(
         "ip",
-        &["netns", "add", NETNS_NAME],
+        &["netns", "add", netns_name],
         "create sandbox network namespace",
     )
     .await?;
@@ -85,23 +100,23 @@ async fn prepare_nat(settings: &NetworkSettings) -> anyhow::Result<()> {
         run_checked(
             "ip",
             &[
-                "link", "add", HOST_VETH, "type", "veth", "peer", "name", "eth0",
+                "link", "add", host_veth, "type", "veth", "peer", "name", "eth0",
             ],
             "create sandbox veth pair",
         )
         .await?;
-        configure_veth(settings).await
+        configure_veth(settings, host_veth, netns_name).await
     }
     .await;
     if let Err(error) = result {
-        cleanup_session().await;
+        cleanup_resources(host_veth, netns_name).await;
         return Err(error);
     }
     Ok(())
 }
 
-pub(super) async fn cleanup_session() {
-    match run_command("ip", &["link", "del", HOST_VETH]).await {
+async fn cleanup_resources(host_veth: &str, netns_name: &str) {
+    match run_command("ip", &["link", "del", host_veth]).await {
         Ok(output) if output.status.success() => {
             info!("removed sandbox host veth");
         }
@@ -112,7 +127,7 @@ pub(super) async fn cleanup_session() {
             warn!(error = %error, "could not inspect sandbox host veth");
         }
     }
-    match run_command("ip", &["netns", "del", NETNS_NAME]).await {
+    match run_command("ip", &["netns", "del", netns_name]).await {
         Ok(output) if output.status.success() => {
             info!("removed sandbox network namespace");
         }
@@ -232,45 +247,55 @@ async fn ensure_iptables_rule(table: &str, chain: &str, rule: Vec<String>) -> an
     run_checked("iptables", &insert, "install sandbox NAT firewall rule").await
 }
 
-async fn configure_veth(settings: &NetworkSettings) -> anyhow::Result<()> {
+async fn configure_veth(
+    settings: &NetworkSettings,
+    host_veth: &str,
+    netns_name: &str,
+) -> anyhow::Result<()> {
     run_checked(
         "ip",
-        &["link", "set", HOST_VETH, "master", &settings.bridge],
+        &["link", "set", host_veth, "master", &settings.bridge],
         "attach sandbox veth to bridge",
     )
     .await?;
     run_checked(
         "ip",
-        &["link", "set", HOST_VETH, "up"],
+        &["link", "set", host_veth, "up"],
         "activate sandbox host veth",
     )
     .await?;
     run_checked(
         "ip",
-        &["link", "set", "eth0", "netns", NETNS_NAME],
+        &["link", "set", "eth0", "netns", netns_name],
         "move sandbox veth into network namespace",
     )
     .await?;
 
-    netns_ip(["link", "set", "lo", "up"]).await?;
-    netns_ip([
-        "addr",
-        "replace",
-        &settings.subnet.address_with_prefix(settings.address),
-        "dev",
-        "eth0",
-    ])
+    netns_ip(netns_name, ["link", "set", "lo", "up"]).await?;
+    netns_ip(
+        netns_name,
+        [
+            "addr",
+            "replace",
+            &settings.subnet.address_with_prefix(settings.address),
+            "dev",
+            "eth0",
+        ],
+    )
     .await?;
-    netns_ip(["link", "set", "eth0", "up"]).await?;
-    netns_ip([
-        "route",
-        "replace",
-        "default",
-        "via",
-        &settings.gateway.to_string(),
-        "dev",
-        "eth0",
-    ])
+    netns_ip(netns_name, ["link", "set", "eth0", "up"]).await?;
+    netns_ip(
+        netns_name,
+        [
+            "route",
+            "replace",
+            "default",
+            "via",
+            &settings.gateway.to_string(),
+            "dev",
+            "eth0",
+        ],
+    )
     .await?;
     Ok(())
 }
@@ -307,11 +332,11 @@ async fn configure_dns(
     Ok(())
 }
 
-async fn netns_ip<const N: usize>(args: [&str; N]) -> anyhow::Result<()> {
+async fn netns_ip<const N: usize>(netns_name: &str, args: [&str; N]) -> anyhow::Result<()> {
     let mut command_args = vec![
         "netns".into(),
         "exec".into(),
-        NETNS_NAME.into(),
+        netns_name.into(),
         "ip".into(),
     ];
     command_args.extend(args.into_iter().map(str::to_owned));

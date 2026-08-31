@@ -1,7 +1,7 @@
 use crate::config::SandboxConfig;
 use std::{
+    collections::BTreeMap,
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -28,7 +28,10 @@ impl std::fmt::Display for SysrootIssue {
     }
 }
 
-pub(crate) fn sysroot_issues(config: &SandboxConfig) -> Vec<SysrootIssue> {
+pub(crate) fn sysroot_issues(
+    config: &SandboxConfig,
+    mounts: &BTreeMap<PathBuf, PathBuf>,
+) -> Vec<SysrootIssue> {
     let mut issues = Vec::new();
     for mountpoint in MOUNTPOINTS {
         check_directory(
@@ -54,44 +57,49 @@ pub(crate) fn sysroot_issues(config: &SandboxConfig) -> Vec<SysrootIssue> {
         }),
     }
 
-    if let Some(workspace_dir) = &config.workspace_dir {
-        match fs::metadata(workspace_dir) {
-            Ok(metadata) if !metadata.is_dir() => issues.push(SysrootIssue {
-                path: workspace_dir.clone(),
-                reason: "workspace is not a directory",
-            }),
-            Ok(metadata) if metadata.permissions().mode() & 0o222 == 0 => {
-                issues.push(SysrootIssue {
-                    path: workspace_dir.clone(),
-                    reason: "workspace is not writable",
-                })
+    for (destination, source) in mounts {
+        match fs::metadata(source) {
+            Ok(source_metadata) => {
+                let target = config
+                    .rootfs_dir
+                    .join(destination.strip_prefix("/").unwrap_or(destination));
+                if source_metadata.is_dir() {
+                    check_directory(&target, &mut issues);
+                } else if source_metadata.is_file() {
+                    check_file(&target, &mut issues);
+                } else {
+                    issues.push(SysrootIssue {
+                        path: source.clone(),
+                        reason: "mount source is not a regular file or directory",
+                    });
+                }
             }
-            Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 issues.push(SysrootIssue {
-                    path: workspace_dir.clone(),
-                    reason: "workspace is missing",
+                    path: source.clone(),
+                    reason: "mount source is missing",
                 })
             }
             Err(_) => issues.push(SysrootIssue {
-                path: workspace_dir.clone(),
-                reason: "workspace cannot be inspected",
+                path: source.clone(),
+                reason: "mount source cannot be inspected",
             }),
         }
-
-        check_directory(&config.rootfs_dir.join("workspace"), &mut issues);
     }
 
     issues
 }
 
-pub(crate) fn fix_sysroot(config: &SandboxConfig) -> std::io::Result<Vec<PathBuf>> {
-    prepare_sysroot(&config.rootfs_dir, config.workspace_dir.as_deref())
+pub(crate) fn fix_sysroot(
+    config: &SandboxConfig,
+    mounts: &BTreeMap<PathBuf, PathBuf>,
+) -> std::io::Result<Vec<PathBuf>> {
+    prepare_sysroot(&config.rootfs_dir, mounts)
 }
 
 pub(crate) fn prepare_sysroot(
     rootfs_dir: &Path,
-    workspace_dir: Option<&Path>,
+    mounts: &BTreeMap<PathBuf, PathBuf>,
 ) -> std::io::Result<Vec<PathBuf>> {
     let mut changed = Vec::new();
     for mountpoint in MOUNTPOINTS {
@@ -101,16 +109,32 @@ pub(crate) fn prepare_sysroot(
         }
     }
 
-    if workspace_dir.is_some() {
-        let path = rootfs_dir.join("workspace");
-        if ensure_directory(&path)? {
-            changed.push(path);
+    for (destination, source) in mounts {
+        let source_metadata = fs::metadata(source)?;
+        let target = rootfs_dir.join(destination.strip_prefix("/").unwrap_or(destination));
+        if source_metadata.is_dir() {
+            if ensure_directory(&target)? {
+                changed.push(target);
+            }
+        } else if source_metadata.is_file() {
+            if let Some(parent) = target.parent() {
+                if ensure_directory(parent)? {
+                    changed.push(parent.to_path_buf());
+                }
+            }
+            if !target.exists() {
+                fs::File::create(&target)?;
+                changed.push(target);
+            }
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "mount source is not a regular file or directory: {}",
+                    source.display()
+                ),
+            ));
         }
-    }
-
-    if let Some(workspace_dir) = workspace_dir {
-        ensure_directory(workspace_dir)?;
-        fs::set_permissions(workspace_dir, fs::Permissions::from_mode(0o777))?;
     }
 
     Ok(changed)
@@ -130,6 +154,24 @@ fn check_directory(path: &Path, issues: &mut Vec<SysrootIssue>) {
         Err(_) => issues.push(SysrootIssue {
             path: path.to_path_buf(),
             reason: "cannot be inspected",
+        }),
+    }
+}
+
+fn check_file(path: &Path, issues: &mut Vec<SysrootIssue>) {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => issues.push(SysrootIssue {
+            path: path.to_path_buf(),
+            reason: "mount target is not a file",
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => issues.push(SysrootIssue {
+            path: path.to_path_buf(),
+            reason: "mount target is missing",
+        }),
+        Err(_) => issues.push(SysrootIssue {
+            path: path.to_path_buf(),
+            reason: "mount target cannot be inspected",
         }),
     }
 }
@@ -154,10 +196,9 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn config(rootfs_dir: PathBuf, workspace_dir: Option<PathBuf>) -> SandboxConfig {
+    fn config(rootfs_dir: PathBuf) -> SandboxConfig {
         let mut config: SandboxConfig = toml::from_str("rootfs_dir = \".\"").unwrap();
         config.rootfs_dir = rootfs_dir;
-        config.workspace_dir = workspace_dir;
         config
     }
 
@@ -166,13 +207,15 @@ mod tests {
         let temp = tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
         fs::create_dir(&rootfs).unwrap();
-        let issues = sysroot_issues(&config(rootfs, Some(temp.path().join("workspace"))));
+        let mut mounts = BTreeMap::new();
+        mounts.insert(PathBuf::from("/workspace"), temp.path().join("workspace"));
+        let issues = sysroot_issues(&config(rootfs), &mounts);
 
         assert!(issues.iter().any(|issue| issue.path.ends_with("proc")));
         assert!(issues.iter().any(|issue| issue.path.ends_with("bin/sh")));
         assert!(issues
             .iter()
-            .any(|issue| issue.reason == "workspace is missing"));
+            .any(|issue| issue.reason == "mount source is missing"));
     }
 
     #[test]
@@ -182,17 +225,16 @@ mod tests {
         fs::create_dir_all(rootfs.join("bin")).unwrap();
         fs::write(rootfs.join("bin/sh"), b"shell").unwrap();
         let workspace = temp.path().join("workspace");
-        let config = config(rootfs.clone(), Some(workspace.clone()));
+        fs::create_dir(&workspace).unwrap();
+        let mut mounts = BTreeMap::new();
+        mounts.insert(PathBuf::from("/workspace"), workspace.clone());
+        let config = config(rootfs.clone());
 
-        let changed = fix_sysroot(&config).unwrap();
+        let changed = fix_sysroot(&config, &mounts).unwrap();
         assert_eq!(changed.len(), 9);
-        assert!(fix_sysroot(&config).unwrap().is_empty());
-        assert!(sysroot_issues(&config).is_empty());
+        assert!(fix_sysroot(&config, &mounts).unwrap().is_empty());
+        assert!(sysroot_issues(&config, &mounts).is_empty());
         assert_eq!(fs::read(rootfs.join("bin/sh")).unwrap(), b"shell");
-        assert_eq!(
-            fs::metadata(workspace).unwrap().permissions().mode() & 0o777,
-            0o777
-        );
     }
 
     #[test]
@@ -201,7 +243,7 @@ mod tests {
         let rootfs = temp.path().join("rootfs");
         fs::create_dir_all(rootfs.join("bin")).unwrap();
         fs::write(rootfs.join("proc"), b"not a directory").unwrap();
-        let error = fix_sysroot(&config(rootfs, None)).unwrap_err();
+        let error = fix_sysroot(&config(rootfs), &BTreeMap::new()).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
     }
 
@@ -212,9 +254,10 @@ mod tests {
         fs::create_dir_all(rootfs.join("bin")).unwrap();
         fs::write(rootfs.join("bin/sh"), b"shell").unwrap();
 
-        let changed = fix_sysroot(&config(rootfs.clone(), None)).unwrap();
+        let mounts = BTreeMap::new();
+        let changed = fix_sysroot(&config(rootfs.clone()), &mounts).unwrap();
         assert_eq!(changed.len(), 8);
         assert!(!rootfs.join("workspace").exists());
-        assert!(sysroot_issues(&config(rootfs, None)).is_empty());
+        assert!(sysroot_issues(&config(rootfs), &mounts).is_empty());
     }
 }

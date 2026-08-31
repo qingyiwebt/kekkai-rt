@@ -5,6 +5,7 @@ use crate::{
 use anyhow::Context;
 use serde::Serialize;
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -36,7 +37,7 @@ struct OciRoot {
 
 #[derive(Serialize)]
 struct OciMount {
-    destination: &'static str,
+    destination: String,
     #[serde(rename = "type")]
     kind: &'static str,
     source: String,
@@ -61,6 +62,7 @@ pub(super) fn prepare_managed_bundle(
     cfg: &SandboxConfig,
     settings: &NetworkSettings,
     network_namespace_path: Option<&str>,
+    configured_mounts: &BTreeMap<PathBuf, PathBuf>,
     tool_mounts: Option<&[ToolSocketMount]>,
 ) -> anyhow::Result<PathBuf> {
     let bundle_dir = if cfg.managed_bundle_dir.as_os_str().is_empty() {
@@ -76,18 +78,24 @@ pub(super) fn prepare_managed_bundle(
 
     let config_path = bundle_dir.join("config.json");
     let mut mounts = standard_mounts();
-    if let Some(workspace_dir) = &cfg.workspace_dir {
+    for (destination, source) in configured_mounts {
+        let metadata = fs::metadata(source)
+            .with_context(|| format!("inspect mount source {}", source.display()))?;
         mounts.push(OciMount {
-            destination: "/workspace",
+            destination: destination.to_string_lossy().into_owned(),
             kind: "bind",
-            source: workspace_dir.to_string_lossy().into_owned(),
-            options: Some(vec!["rbind", "rw"]),
+            source: source.to_string_lossy().into_owned(),
+            options: Some(if metadata.is_dir() {
+                vec!["rbind", "rw"]
+            } else {
+                vec!["bind", "rw"]
+            }),
         });
     }
     if let Some(tool_mounts) = tool_mounts {
         for mount in tool_mounts {
             mounts.push(OciMount {
-                destination: mount.destination,
+                destination: mount.destination.into(),
                 kind: "bind",
                 source: mount.source.to_string_lossy().into_owned(),
                 options: Some(vec!["bind"]),
@@ -129,19 +137,19 @@ pub(super) fn prepare_managed_bundle(
 fn standard_mounts() -> Vec<OciMount> {
     vec![
         OciMount {
-            destination: "/proc",
+            destination: "/proc".into(),
             kind: "proc",
             source: "proc".into(),
             options: None,
         },
         OciMount {
-            destination: "/dev",
+            destination: "/dev".into(),
             kind: "tmpfs",
             source: "tmpfs".into(),
             options: Some(vec!["nosuid", "strictatime", "mode=755", "size=65536k"]),
         },
         OciMount {
-            destination: "/dev/pts",
+            destination: "/dev/pts".into(),
             kind: "devpts",
             source: "devpts".into(),
             options: Some(vec![
@@ -154,7 +162,7 @@ fn standard_mounts() -> Vec<OciMount> {
             ]),
         },
         OciMount {
-            destination: "/dev/shm",
+            destination: "/dev/shm".into(),
             kind: "tmpfs",
             source: "shm".into(),
             options: Some(vec![
@@ -166,19 +174,19 @@ fn standard_mounts() -> Vec<OciMount> {
             ]),
         },
         OciMount {
-            destination: "/dev/mqueue",
+            destination: "/dev/mqueue".into(),
             kind: "mqueue",
             source: "mqueue".into(),
             options: Some(vec!["nosuid", "noexec", "nodev"]),
         },
         OciMount {
-            destination: "/sys",
+            destination: "/sys".into(),
             kind: "sysfs",
             source: "sysfs".into(),
             options: Some(vec!["nosuid", "noexec", "nodev", "ro"]),
         },
         OciMount {
-            destination: "/sys/fs/cgroup",
+            destination: "/sys/fs/cgroup".into(),
             kind: "cgroup",
             source: "cgroup".into(),
             options: Some(vec!["nosuid", "noexec", "nodev", "relatime", "ro"]),
@@ -203,23 +211,30 @@ mod tests {
     fn generated_config_contains_rootfs_system_mounts_and_workspace() {
         let temp = tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
-        let workspace = temp.path().join("workspace");
         fs::create_dir_all(rootfs.join("bin")).unwrap();
         fs::write(rootfs.join("bin/sh"), b"placeholder").unwrap();
         let mut cfg: SandboxConfig = toml::from_str(
             r#"
 rootfs_dir = "."
-workspace_dir = "."
 "#,
         )
         .unwrap();
         cfg.rootfs_dir = rootfs.clone();
-        cfg.workspace_dir = Some(workspace.clone());
         cfg.managed_bundle_dir = temp.path().join("bundle");
+        let mut mounts = BTreeMap::new();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        mounts.insert(PathBuf::from("/workspace"), workspace.clone());
         let settings = cfg.network_settings().unwrap();
 
-        let bundle =
-            prepare_managed_bundle(&cfg, &settings, Some("/run/netns/kekkai-rtns"), None).unwrap();
+        let bundle = prepare_managed_bundle(
+            &cfg,
+            &settings,
+            Some("/run/netns/kekkai-rtns"),
+            &mounts,
+            None,
+        )
+        .unwrap();
         let spec: Value =
             serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
         assert_eq!(spec["root"]["path"], rootfs.to_string_lossy().as_ref());
@@ -254,7 +269,8 @@ workspace_dir = "."
             destination: crate::proxy::SOCKET_DESTINATION,
         }];
 
-        let bundle = prepare_managed_bundle(&cfg, &settings, None, Some(&mounts)).unwrap();
+        let bundle =
+            prepare_managed_bundle(&cfg, &settings, None, &BTreeMap::new(), Some(&mounts)).unwrap();
         let spec: Value =
             serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
         let tool_mounts = spec["mounts"]

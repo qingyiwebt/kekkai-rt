@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_server(config_path: &std::path::Path) -> anyhow::Result<()> {
     let config = Config::load(config_path).context("load configuration")?;
     let sandbox = Arc::new(
-        Sandbox::start(&config.sandbox, &config.tools)
+        Sandbox::start(&config.sandbox, &config.mounts, &config.tools)
             .await
             .context("start sandbox")?,
     );
@@ -109,18 +109,14 @@ mod tests {
     }
 
     #[test]
-    fn init_takes_distribution_as_a_positional_argument() {
-        let args = Args::try_parse_from(["kekkai-rt", "init", "alpine"]).unwrap();
+    fn init_takes_oci_image_as_a_positional_argument() {
+        let args = Args::try_parse_from(["kekkai-rt", "init", "image.tar"]).unwrap();
         assert!(matches!(
             args.command,
-            Some(maintenance::Command::Init { .. })
+            Some(maintenance::Command::Init { image }) if image == PathBuf::from("image.tar")
         ));
-
-        let args =
-            Args::try_parse_from(["kekkai-rt", "init", "alpine", "--version", "3.24.1"]).unwrap();
         assert!(
-            matches!(args.command, Some(maintenance::Command::Init { version: Some(version), .. }) if version == "3.24.1")
+            Args::try_parse_from(["kekkai-rt", "init", "alpine", "--version", "3.24.1"]).is_err()
         );
-        assert!(Args::try_parse_from(["kekkai-rt", "init", "debian"]).is_err());
     }
 }

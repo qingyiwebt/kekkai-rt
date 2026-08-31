@@ -11,16 +11,23 @@ use crate::{
 use anyhow::{anyhow, bail, Context};
 use process::RuntimeClient;
 use session::ContainerSession;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::{self, File},
+    os::unix::io::AsRawFd,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::time::{sleep, timeout, Instant};
 use tracing::{debug, info, warn};
 
-const CONTAINER_ID: &str = "kekkai-rt";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 pub struct Sandbox {
     session: Option<Arc<ContainerSession>>,
+    _instance_lock: Option<File>,
 }
 
 pub use process::RunningExec;
@@ -28,9 +35,12 @@ pub use process::RunningExec;
 impl Sandbox {
     pub async fn start(
         cfg: &SandboxConfig,
+        mounts: &BTreeMap<std::path::PathBuf, std::path::PathBuf>,
         configured_tools: &HashMap<String, ToolConfig>,
     ) -> anyhow::Result<Self> {
-        let sysroot_issues = crate::maintenance::sysroot::sysroot_issues(cfg);
+        let instance_id = instance_id(cfg);
+        let instance_lock = acquire_instance_lock(cfg)?;
+        let sysroot_issues = crate::maintenance::sysroot::sysroot_issues(cfg, mounts);
         if !sysroot_issues.is_empty() {
             let details = sysroot_issues
                 .iter()
@@ -48,7 +58,7 @@ impl Sandbox {
         let settings = &resolved.network;
         let runtime = RuntimeClient::new(
             &resolved.backend,
-            CONTAINER_ID,
+            &instance_id,
             resolved.backend == "runsc" && !configured_tools.is_empty(),
             resolved.backend == "runsc",
         );
@@ -62,7 +72,7 @@ impl Sandbox {
             })?;
 
         runtime.remove().await?;
-        let network = network::prepare_network(settings)
+        let network = network::prepare_network(settings, &instance_id)
             .await
             .context("prepare sandbox network")?;
         let tool_proxy = match crate::proxy::ToolProxy::start(cfg, configured_tools).await {
@@ -77,6 +87,7 @@ impl Sandbox {
             cfg,
             settings,
             network.namespace_path(),
+            mounts,
             tool_mounts.as_deref(),
         ) {
             Ok(path) => path,
@@ -110,6 +121,7 @@ impl Sandbox {
         let session = Arc::new(ContainerSession::new(runtime, child, network, tool_proxy));
         let sandbox = Self {
             session: Some(session),
+            _instance_lock: Some(instance_lock),
         };
 
         let startup = async {
@@ -211,8 +223,49 @@ impl Sandbox {
 
     #[cfg(test)]
     pub(crate) fn test_instance() -> Self {
-        Self { session: None }
+        Self {
+            session: None,
+            _instance_lock: None,
+        }
     }
+}
+
+fn instance_id(cfg: &SandboxConfig) -> String {
+    let source = cfg.managed_bundle_dir.to_string_lossy();
+    let digest = Sha256::digest(source.as_bytes());
+    let suffix = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("kekkai-rt-{suffix}")
+}
+
+fn acquire_instance_lock(cfg: &SandboxConfig) -> anyhow::Result<File> {
+    fs::create_dir_all(&cfg.managed_bundle_dir).with_context(|| {
+        format!(
+            "create managed bundle directory {}",
+            cfg.managed_bundle_dir.display()
+        )
+    })?;
+    let path = cfg.managed_bundle_dir.join(".lock");
+    let file = File::options()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("open sandbox instance lock {}", path.display()))?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            bail!(
+                "sandbox instance is already running for {}",
+                cfg.managed_bundle_dir.display()
+            );
+        }
+        return Err(error).context("acquire sandbox instance lock");
+    }
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -282,7 +335,7 @@ esac
             let rootfs = root.join("rootfs");
             fs::create_dir_all(rootfs.join("bin")).unwrap();
             fs::write(rootfs.join("bin/sh"), b"shell").unwrap();
-            crate::maintenance::sysroot::prepare_sysroot(&rootfs, None).unwrap();
+            crate::maintenance::sysroot::prepare_sysroot(&rootfs, &BTreeMap::new()).unwrap();
             let mut config: SandboxConfig = toml::from_str("rootfs_dir = \".\"").unwrap();
             config.rootfs_dir = rootfs;
             config.backend = self.executable.to_string_lossy().into_owned();
@@ -308,7 +361,7 @@ esac
     async fn foreground_runtime_is_owned_and_cleaned() {
         let temp = tempdir().unwrap();
         let fake = FakeRuntime::new(temp.path());
-        let sandbox = Sandbox::start(&fake.config(temp.path()), &HashMap::new())
+        let sandbox = Sandbox::start(&fake.config(temp.path()), &BTreeMap::new(), &HashMap::new())
             .await
             .unwrap();
 
@@ -348,10 +401,8 @@ esac
             .into_iter()
             .find(|line| line.starts_with("exec "))
             .unwrap();
-        assert_eq!(
-            exec,
-            "exec --cwd /workspace --env FOO=bar kekkai-rt /bin/echo hello"
-        );
+        assert!(exec.starts_with("exec --cwd /workspace --env FOO=bar kekkai-rt-"));
+        assert!(exec.ends_with(" /bin/echo hello"));
 
         sandbox.shutdown().await.unwrap();
         sandbox.shutdown().await.unwrap();
@@ -371,7 +422,13 @@ esac
         let fake = FakeRuntime::new(temp.path());
         fs::write(&fake.mode, b"exit").unwrap();
 
-        let error = match Sandbox::start(&fake.config(temp.path()), &HashMap::new()).await {
+        let error = match Sandbox::start(
+            &fake.config(temp.path()),
+            &BTreeMap::new(),
+            &HashMap::new(),
+        )
+        .await
+        {
             Ok(_) => panic!("sandbox unexpectedly started"),
             Err(error) => error,
         };

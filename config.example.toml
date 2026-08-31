@@ -3,8 +3,7 @@ listen_addr = "0.0.0.0:8080"
 token = "replace-me"
 
 [sandbox]
-rootfs_dir = "./alpine" # writable changes persist across container restarts
-workspace_dir = "./workspace"
+rootfs_dir = "./sysroot" # writable changes persist across container restarts
 backend = "runsc"
 max_timeout_seconds = 300
 network_mode = "nat" # nat, host, or none
@@ -13,6 +12,9 @@ network_subnet = "10.200.0.0/24"
 network_gateway = "10.200.0.1"
 network_ip = "10.200.0.2"
 network_dns = ["1.1.1.1", "8.8.8.8"]
+
+[mounts]
+"/workspace" = "./workspace"
 
 # Optional host-side tool proxy. Paths are relative to this config file.
 # [tools.'something-cli']
