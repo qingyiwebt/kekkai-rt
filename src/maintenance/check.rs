@@ -1,6 +1,7 @@
 use super::sysroot;
 use crate::{
-    config::{Config, NetworkMode},
+    config::{CgroupAction, CgroupMode, Config, NetworkMode},
+    host::HostCapabilities,
     runtime::Sandbox,
 };
 use anyhow::{bail, Context};
@@ -43,6 +44,26 @@ pub(crate) async fn inspect(config: &Config) -> CheckReport {
         ],
         failures: 0,
     };
+    let capabilities = HostCapabilities::detect();
+
+    match config.features.resolve(&capabilities) {
+        Ok(resolved) if matches!(resolved.cgroups, CgroupAction::Use) => {
+            report.lines.push(format!(
+                "[ok] cgroups enabled ({})",
+                config.features.cgroups.as_str()
+            ))
+        }
+        Ok(_) if matches!(config.features.cgroups, CgroupMode::Disabled) => report
+            .lines
+            .push("[ok] cgroups disabled by configuration".into()),
+        Ok(_) => report.lines.push(
+            "[warning] cgroups disabled: memory controller is unavailable (auto mode)".into(),
+        ),
+        Err(error) => {
+            report.lines.push(format!("[error] cgroups: {error}"));
+            report.failures += 1;
+        }
+    }
 
     let sysroot_issues = sysroot::sysroot_issues(&config.sandbox, &config.mounts);
     if sysroot_issues.is_empty() {
@@ -56,7 +77,7 @@ pub(crate) async fn inspect(config: &Config) -> CheckReport {
         }
     }
 
-    match Sandbox::probe_program(&config.sandbox.backend).await {
+    match Sandbox::probe_program(config.sandbox.backend.as_str()).await {
         Ok(()) => report
             .lines
             .push(format!("[ok] backend {}", config.sandbox.backend)),
@@ -71,17 +92,19 @@ pub(crate) async fn inspect(config: &Config) -> CheckReport {
 
     if let Ok(settings) = config.sandbox.network_settings() {
         if matches!(settings.mode, NetworkMode::Nat) {
-            for program in ["ip", "nsenter", "iptables"] {
-                match Sandbox::probe_program(program).await {
-                    Ok(()) => report.lines.push(format!("[ok] NAT dependency {program}")),
-                    Err(error) => {
-                        report
-                            .lines
-                            .push(format!("[error] NAT dependency {program}: {error}"));
-                        report.failures += 1;
-                    }
-                }
+            if capabilities.nat_available() {
+                report.lines.push("[ok] NAT network capabilities".into());
+            } else {
+                let reasons = capabilities.nat_unavailability_reasons().join(", ");
+                report.lines.push(format!(
+                    "[error] NAT network capabilities: unavailable {reasons}"
+                ));
+                report.failures += 1;
             }
+        } else if matches!(settings.mode, NetworkMode::Host) {
+            report
+                .lines
+                .push("[warning] network mode host: sandbox network isolation is reduced".into());
         } else {
             report
                 .lines

@@ -1,7 +1,4 @@
-use crate::{
-    config::{NetworkMode, NetworkSettings, SandboxConfig},
-    proxy::ToolSocketMount,
-};
+use crate::{config::SandboxConfig, proxy::ToolSocketMount};
 use anyhow::Context;
 use serde::Serialize;
 use std::{
@@ -9,6 +6,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+
+use super::network::NetworkAttachment;
 
 #[derive(Serialize)]
 struct OciSpec {
@@ -60,8 +59,7 @@ struct OciNamespace {
 
 pub(super) fn prepare_managed_bundle(
     cfg: &SandboxConfig,
-    settings: &NetworkSettings,
-    network_namespace_path: Option<&str>,
+    attachment: &NetworkAttachment,
     configured_mounts: &BTreeMap<PathBuf, PathBuf>,
     tool_mounts: Option<&[ToolSocketMount]>,
 ) -> anyhow::Result<PathBuf> {
@@ -104,10 +102,10 @@ pub(super) fn prepare_managed_bundle(
     }
 
     let mut namespaces = standard_namespaces();
-    if !matches!(settings.mode, NetworkMode::Host) {
+    if let NetworkAttachment::Isolated { namespace_path } = attachment {
         namespaces.push(OciNamespace {
             kind: "network",
-            path: network_namespace_path.map(str::to_owned),
+            path: namespace_path.clone(),
         });
     }
 
@@ -225,12 +223,11 @@ rootfs_dir = "."
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         mounts.insert(PathBuf::from("/workspace"), workspace.clone());
-        let settings = cfg.network_settings().unwrap();
-
         let bundle = prepare_managed_bundle(
             &cfg,
-            &settings,
-            Some("/run/netns/kekkai-rtns"),
+            &NetworkAttachment::Isolated {
+                namespace_path: Some("/run/netns/kekkai-rtns".into()),
+            },
             &mounts,
             None,
         )
@@ -263,14 +260,20 @@ rootfs_dir = "."
         let mut cfg: SandboxConfig = toml::from_str("rootfs_dir = \".\"").unwrap();
         cfg.rootfs_dir = rootfs;
         cfg.managed_bundle_dir = temp.path().join("bundle");
-        let settings = cfg.network_settings().unwrap();
         let mounts = vec![ToolSocketMount {
             source: temp.path().join("kekkai-rt-tools.socket"),
             destination: crate::proxy::SOCKET_DESTINATION,
         }];
 
-        let bundle =
-            prepare_managed_bundle(&cfg, &settings, None, &BTreeMap::new(), Some(&mounts)).unwrap();
+        let bundle = prepare_managed_bundle(
+            &cfg,
+            &NetworkAttachment::Isolated {
+                namespace_path: None,
+            },
+            &BTreeMap::new(),
+            Some(&mounts),
+        )
+        .unwrap();
         let spec: Value =
             serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
         let tool_mounts = spec["mounts"]
@@ -286,5 +289,26 @@ rootfs_dir = "."
             .collect::<Vec<_>>();
         assert_eq!(tool_mounts.len(), 1);
         assert!(tool_mounts.iter().all(|mount| mount["type"] == "bind"));
+    }
+
+    #[test]
+    fn host_network_config_omits_network_namespace() {
+        let temp = tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir_all(rootfs.join("bin")).unwrap();
+        fs::write(rootfs.join("bin/sh"), b"placeholder").unwrap();
+        let mut cfg: SandboxConfig =
+            toml::from_str("rootfs_dir = \".\"\nnetwork_mode = \"host\"").unwrap();
+        cfg.rootfs_dir = rootfs;
+        cfg.managed_bundle_dir = temp.path().join("bundle");
+        let bundle =
+            prepare_managed_bundle(&cfg, &NetworkAttachment::Host, &BTreeMap::new(), None).unwrap();
+        let spec: Value =
+            serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
+        assert!(spec["linux"]["namespaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|namespace| namespace["type"] != "network"));
     }
 }

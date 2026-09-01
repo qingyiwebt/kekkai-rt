@@ -607,6 +607,7 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-stream",
+ "async-trait",
  "axum",
  "chrono",
  "clap",

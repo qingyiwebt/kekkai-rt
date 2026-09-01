@@ -1,6 +1,8 @@
+use serde::Deserialize;
 use std::net::Ipv4Addr;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum NetworkMode {
     Nat,
     Host,
@@ -8,17 +10,6 @@ pub enum NetworkMode {
 }
 
 impl NetworkMode {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "nat" => Ok(Self::Nat),
-            "host" => Ok(Self::Host),
-            "none" => Ok(Self::None),
-            other => Err(format!(
-                "network_mode must be nat, host, or none (got {other})"
-            )),
-        }
-    }
-
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Nat => "nat",
@@ -88,7 +79,6 @@ pub struct NetworkSettings {
 
 impl super::SandboxConfig {
     pub fn network_settings(&self) -> Result<NetworkSettings, String> {
-        let mode = NetworkMode::parse(&self.network_mode)?;
         if self.network_bridge.is_empty()
             || self.network_bridge.len() > 15
             || self
@@ -143,7 +133,7 @@ impl super::SandboxConfig {
         }
 
         Ok(NetworkSettings {
-            mode,
+            mode: self.network_mode,
             bridge: self.network_bridge.clone(),
             subnet,
             gateway,
@@ -173,20 +163,21 @@ mod tests {
 
     #[test]
     fn network_modes_are_supported() {
-        for mode in ["nat", "host", "none"] {
+        for mode in [NetworkMode::Nat, NetworkMode::Host, NetworkMode::None] {
             let mut config = config();
-            config.network_mode = mode.into();
-            assert!(config.network_settings().is_ok(), "mode={mode}");
+            config.network_mode = mode;
+            assert!(config.network_settings().is_ok(), "mode={mode:?}");
         }
     }
 
     #[test]
     fn invalid_network_values_are_rejected() {
-        let mut config = config();
-        config.network_mode = "bridge".into();
-        assert!(config.network_settings().is_err());
+        let parsed: Result<super::super::SandboxConfig, _> =
+            toml::from_str("rootfs_dir = \".\"\nnetwork_mode = \"bridge\"");
+        assert!(parsed.is_err());
 
-        config.network_mode = "nat".into();
+        let mut config = config();
+        config.network_mode = NetworkMode::Nat;
         config.network_ip = "10.201.0.2".into();
         assert!(config.network_settings().is_err());
     }

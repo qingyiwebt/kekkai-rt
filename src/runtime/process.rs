@@ -1,4 +1,7 @@
-use crate::tasks::ExecRequest;
+use crate::{
+    config::{CgroupAction, NetworkMode, RuntimeBackend},
+    tasks::ExecRequest,
+};
 use anyhow::{anyhow, bail, Context};
 use std::{path::Path, process::Stdio};
 use tokio::{
@@ -18,24 +21,60 @@ pub struct RunningExec {
 
 #[derive(Clone)]
 pub(super) struct RuntimeClient {
-    program: String,
+    plan: RuntimePlan,
     container_id: String,
-    allow_host_uds: bool,
-    persist_rootfs: bool,
+    program: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RuntimePlan {
+    pub(super) backend: RuntimeBackend,
+    pub(super) network_mode: NetworkMode,
+    pub(super) cgroups: CgroupAction,
+    pub(super) allow_host_uds: bool,
+    pub(super) persist_rootfs: bool,
+}
+
+impl RuntimePlan {
+    pub(super) fn from_settings(
+        backend: RuntimeBackend,
+        network_mode: NetworkMode,
+        cgroups: CgroupAction,
+        has_tool_proxy: bool,
+    ) -> Self {
+        Self {
+            backend,
+            network_mode,
+            cgroups,
+            allow_host_uds: backend.is_runsc() && has_tool_proxy,
+            persist_rootfs: backend.is_runsc(),
+        }
+    }
+
+    pub(super) fn program(&self) -> &'static str {
+        self.backend.as_str()
+    }
 }
 
 impl RuntimeClient {
-    pub(super) fn new(
-        program: impl Into<String>,
+    pub(super) fn new(plan: RuntimePlan, container_id: impl Into<String>) -> Self {
+        Self {
+            program: plan.program().into(),
+            plan,
+            container_id: container_id.into(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_with_program(
+        plan: RuntimePlan,
         container_id: impl Into<String>,
-        allow_host_uds: bool,
-        persist_rootfs: bool,
+        program: impl Into<String>,
     ) -> Self {
         Self {
-            program: program.into(),
+            plan,
             container_id: container_id.into(),
-            allow_host_uds,
-            persist_rootfs,
+            program: program.into(),
         }
     }
 
@@ -45,6 +84,10 @@ impl RuntimeClient {
 
     pub(super) fn container_id(&self) -> &str {
         &self.container_id
+    }
+
+    pub(super) fn backend(&self) -> RuntimeBackend {
+        self.plan.backend
     }
 
     pub(super) async fn probe(program: &str) -> anyhow::Result<()> {
@@ -76,12 +119,7 @@ impl RuntimeClient {
     pub(super) fn spawn_container(&self, bundle_dir: &Path) -> anyhow::Result<Child> {
         let mut command = Command::new(&self.program);
         command
-            .args(run_args(
-                self.allow_host_uds,
-                self.persist_rootfs,
-                bundle_dir,
-                &self.container_id,
-            ))
+            .args(run_args(&self.plan, bundle_dir, &self.container_id))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -169,21 +207,26 @@ impl RuntimeClient {
     }
 }
 
-fn run_args(
-    allow_host_uds: bool,
-    persist_rootfs: bool,
-    bundle_dir: &Path,
-    container_id: &str,
-) -> Vec<String> {
+fn run_args(plan: &RuntimePlan, bundle_dir: &Path, container_id: &str) -> Vec<String> {
     let mut args = Vec::new();
-    if allow_host_uds {
-        args.push("--host-uds=open".into());
-    }
-    if persist_rootfs {
-        // runsc enables a writable rootfs overlay by default. Disable it so
-        // writes go to the configured rootfs directory and survive container
-        // deletion and the next Kekkai Runtime startup.
-        args.push("--overlay2=none".into());
+    if plan.backend.is_runsc() {
+        if plan.allow_host_uds {
+            args.push("--host-uds=open".into());
+        }
+        if matches!(plan.cgroups, CgroupAction::Ignore) {
+            args.push("--ignore-cgroups".into());
+        }
+        match plan.network_mode {
+            NetworkMode::Host => args.push("--network=host".into()),
+            NetworkMode::None => args.push("--network=none".into()),
+            NetworkMode::Nat => {}
+        }
+        if plan.persist_rootfs {
+            // runsc enables a writable rootfs overlay by default. Disable it so
+            // writes go to the configured rootfs directory and survive container
+            // deletion and the next Kekkai Runtime startup.
+            args.push("--overlay2=none".into());
+        }
     }
     args.extend([
         "run".into(),
@@ -204,7 +247,8 @@ fn probe_args(program: &str) -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
-    use super::{probe_args, run_args, RuntimeClient};
+    use super::{probe_args, run_args, RuntimeClient, RuntimePlan};
+    use crate::config::{CgroupAction, NetworkMode, RuntimeBackend};
 
     #[test]
     fn uses_iproute2_compatible_version_flag() {
@@ -214,11 +258,18 @@ mod tests {
 
     #[test]
     fn runsc_disables_temporary_rootfs_overlay() {
-        let runtime = RuntimeClient::new("runsc", "kekkai-rt-abcd1234", false, true);
+        let runtime = RuntimeClient::new(
+            RuntimePlan::from_settings(
+                RuntimeBackend::Runsc,
+                NetworkMode::Nat,
+                CgroupAction::Use,
+                false,
+            ),
+            "kekkai-rt-abcd1234",
+        );
         assert_eq!(
             run_args(
-                runtime.allow_host_uds,
-                runtime.persist_rootfs,
+                &runtime.plan,
                 std::path::Path::new("/bundle"),
                 &runtime.container_id,
             ),
@@ -230,5 +281,59 @@ mod tests {
                 "kekkai-rt-abcd1234",
             ]
         );
+    }
+
+    #[test]
+    fn runsc_receives_network_and_cgroup_compatibility_flags() {
+        let args = run_args(
+            &RuntimePlan::from_settings(
+                RuntimeBackend::Runsc,
+                NetworkMode::Host,
+                CgroupAction::Ignore,
+                false,
+            ),
+            std::path::Path::new("/bundle"),
+            "id",
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--ignore-cgroups",
+                "--network=host",
+                "--overlay2=none",
+                "run",
+                "--bundle",
+                "/bundle",
+                "id",
+            ]
+        );
+
+        let args = run_args(
+            &RuntimePlan::from_settings(
+                RuntimeBackend::Runsc,
+                NetworkMode::None,
+                CgroupAction::Use,
+                false,
+            ),
+            std::path::Path::new("/bundle"),
+            "id",
+        );
+        assert_eq!(args[0], "--network=none");
+        assert!(args.iter().any(|arg| arg == "run"));
+    }
+
+    #[test]
+    fn runc_does_not_receive_runsc_flags() {
+        let args = run_args(
+            &RuntimePlan::from_settings(
+                RuntimeBackend::Runc,
+                NetworkMode::Host,
+                CgroupAction::Ignore,
+                true,
+            ),
+            std::path::Path::new("/bundle"),
+            "id",
+        );
+        assert_eq!(args, vec!["run", "--bundle", "/bundle", "id"]);
     }
 }

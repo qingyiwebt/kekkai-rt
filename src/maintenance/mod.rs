@@ -1,4 +1,5 @@
 mod check;
+mod config_template;
 mod fix;
 mod init;
 mod init_support;

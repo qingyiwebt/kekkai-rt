@@ -1,9 +1,8 @@
 use anyhow::{bail, ensure, Context};
 use flate2::read::GzDecoder;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
     fs::{self, File},
     io::{self, Read},
     path::{Component, Path, PathBuf},
@@ -35,59 +34,6 @@ struct Descriptor {
 struct Platform {
     os: String,
     architecture: String,
-}
-
-#[derive(Serialize)]
-struct GeneratedConfig {
-    api: GeneratedApiConfig,
-    sandbox: GeneratedSandboxConfig,
-    mounts: BTreeMap<String, String>,
-}
-
-#[derive(Serialize)]
-struct GeneratedApiConfig {
-    listen_addr: String,
-    token: String,
-}
-
-#[derive(Serialize)]
-struct GeneratedSandboxConfig {
-    rootfs_dir: String,
-    backend: String,
-    max_timeout_seconds: u64,
-    network_mode: String,
-    network_bridge: String,
-    network_subnet: String,
-    network_gateway: String,
-    network_ip: String,
-    network_dns: Vec<String>,
-}
-
-pub(crate) fn generated_config(rootfs: &Path, workspace: &Path) -> anyhow::Result<String> {
-    let mut mounts = BTreeMap::new();
-    mounts.insert(
-        "/workspace".into(),
-        workspace.to_string_lossy().into_owned(),
-    );
-    let config = GeneratedConfig {
-        api: GeneratedApiConfig {
-            listen_addr: "0.0.0.0:8080".into(),
-            token: Uuid::new_v4().as_simple().to_string(),
-        },
-        sandbox: GeneratedSandboxConfig {
-            rootfs_dir: rootfs.to_string_lossy().into_owned(),
-            backend: "runsc".into(),
-            max_timeout_seconds: 300,
-            network_mode: "nat".into(),
-            network_bridge: "kekkai-rt0".into(),
-            network_subnet: "10.200.0.0/24".into(),
-            network_gateway: "10.200.0.1".into(),
-            network_ip: "10.200.0.2".into(),
-            network_dns: vec!["1.1.1.1".into(), "8.8.8.8".into()],
-        },
-        mounts,
-    };
-    Ok(format!("{}\n", toml::to_string_pretty(&config)?))
 }
 
 pub(crate) fn extract_oci_image(image: &Path, destination: &Path) -> anyhow::Result<()> {

@@ -96,6 +96,7 @@ rootfs_dir = "."
                 token: "secret".into(),
             },
             sandbox,
+            features: crate::config::FeaturesConfig::default(),
             mounts: BTreeMap::new(),
             tools: HashMap::new(),
         };
@@ -167,6 +168,7 @@ rootfs_dir = "."
                 token: "secret".into(),
             },
             sandbox,
+            features: crate::config::FeaturesConfig::default(),
             mounts,
             tools: HashMap::new(),
         };

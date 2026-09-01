@@ -1,6 +1,7 @@
 mod api;
 mod config;
 mod execution;
+mod host;
 mod maintenance;
 mod proxy;
 mod runtime;
@@ -37,9 +38,14 @@ async fn main() -> anyhow::Result<()> {
 async fn run_server(config_path: &std::path::Path) -> anyhow::Result<()> {
     let config = Config::load(config_path).context("load configuration")?;
     let sandbox = Arc::new(
-        Sandbox::start(&config.sandbox, &config.mounts, &config.tools)
-            .await
-            .context("start sandbox")?,
+        Sandbox::start(
+            &config.sandbox,
+            &config.features,
+            &config.mounts,
+            &config.tools,
+        )
+        .await
+        .context("start sandbox")?,
     );
     let state = api::AppState::new(config.clone(), sandbox.clone());
     let app = api::router(state.clone());

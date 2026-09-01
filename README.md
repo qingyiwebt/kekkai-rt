@@ -22,11 +22,16 @@ network_gateway = "10.200.0.1"
 network_ip = "10.200.0.2"
 network_dns = ["1.1.1.1", "8.8.8.8"]
 
+[features]
+cgroups = "auto" # auto, required, or disabled
+
 [mounts]
 "/workspace" = "./workspace" # optional host bind mount
 ```
 
-The sandbox network is configured in the `[sandbox]` section. `network_mode = "nat"` is the default and creates an isolated bridge/veth network with outbound NAT. `network_mode = "host"` shares the host network namespace, while `network_mode = "none"` keeps the container isolated from external networks. NAT mode requires root (or `CAP_NET_ADMIN`), `ip`, `nsenter`, and `iptables` on the host.
+The sandbox network is configured in the `[sandbox]` section. `network_mode = "nat"` is the default and creates an isolated bridge/veth network with outbound NAT. `network_mode = "host"` shares the host network namespace, while `network_mode = "none"` keeps the container isolated from external networks. NAT mode requires root (or `CAP_NET_ADMIN`), `ip`, `nsenter`, and `iptables` on the host. When using `runsc`, host and none modes are translated to the corresponding runtime network flags automatically.
+
+The optional `[features]` section controls host-dependent runtime features. `cgroups = "auto"` is the default and uses cgroups when the host exposes the memory controller, otherwise it starts runsc with `--ignore-cgroups`. Use `required` to fail when the memory controller is unavailable, or `disabled` to always skip cgroup setup. `init` detects the current host capabilities when it creates a new configuration: it chooses NAT when its permissions and dependencies are available, otherwise host networking, and records the matching cgroup setting.
 
 The container belongs to the Kekkai Runtime process. Kekkai Runtime starts `runc` or `runsc` in foreground mode, waits for accepted execution tasks during graceful shutdown, then kills and deletes the instance-specific container and removes its session veth. The bridge and iptables rules are retained as shared, idempotently managed host resources. Each configuration directory gets its own container, network namespace, and veth names; multiple instances must still use non-conflicting configured network addresses.
 
@@ -88,6 +93,8 @@ kekkai-rt init ./image.tar
 ```
 
 The sysroot maintenance commands check or repair `/proc`, `/sys`, `/dev`, `/dev/pts`, `/dev/shm`, `/dev/mqueue`, `/run`, `/sys/fs/cgroup`, and configured mount targets. Mount sources must already exist; `fix` does not create missing host sources. It does not install runtimes or modify bridge and iptables state. A normal startup refuses to continue when required sysroot paths are missing and suggests running `kekkai-rt fix`.
+
+`kekkai-rt check` reports the effective cgroup policy and network capability status. An explicitly configured NAT network remains strict and fails with an actionable error when the host lacks the required permission or dependency; automatic NAT fallback is only used by `init` while generating a new configuration.
 
 `kekkai-rt init <oci-image>` accepts an OCI image archive or OCI image layout, selects the manifest matching the current Linux architecture, verifies OCI blob digests, applies layers including whiteouts, and installs the result atomically under `./sysroot`. It also creates `./workspace` and generates `config.toml` with a `/workspace` mount when that file does not exist. Existing `sysroot` directories and configuration files are never overwritten.
 

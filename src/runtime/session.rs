@@ -43,6 +43,7 @@ impl ContainerSession {
             settings,
             pid,
             self.runtime.program(),
+            self.runtime.backend(),
             self.runtime.container_id(),
         )
         .await

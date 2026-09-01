@@ -1,3 +1,4 @@
+mod features;
 mod network;
 mod runtime;
 
@@ -11,12 +12,17 @@ use std::{
 };
 use thiserror::Error;
 
+pub(crate) use features::CgroupAction;
+pub use features::{CgroupMode, FeaturesConfig};
 pub use network::{NetworkMode, NetworkSettings};
+pub use runtime::RuntimeBackend;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     pub api: ApiConfig,
     pub sandbox: SandboxConfig,
+    #[serde(default)]
+    pub features: FeaturesConfig,
     #[serde(default)]
     pub mounts: BTreeMap<PathBuf, PathBuf>,
     #[serde(default)]
@@ -41,11 +47,11 @@ pub struct ToolConfig {
 pub struct SandboxConfig {
     pub rootfs_dir: PathBuf,
     #[serde(default = "default_backend")]
-    pub backend: String,
+    pub backend: RuntimeBackend,
     #[serde(default = "default_timeout")]
     pub max_timeout_seconds: u64,
     #[serde(default = "default_network_mode")]
-    pub network_mode: String,
+    pub network_mode: NetworkMode,
     #[serde(default = "default_network_bridge")]
     pub network_bridge: String,
     #[serde(default = "default_network_subnet")]
@@ -60,16 +66,16 @@ pub struct SandboxConfig {
     pub managed_bundle_dir: PathBuf,
 }
 
-fn default_backend() -> String {
-    "runsc".into()
+fn default_backend() -> RuntimeBackend {
+    RuntimeBackend::Runsc
 }
 
 fn default_timeout() -> u64 {
     300
 }
 
-fn default_network_mode() -> String {
-    "nat".into()
+fn default_network_mode() -> NetworkMode {
+    NetworkMode::Nat
 }
 
 fn default_network_bridge() -> String {
@@ -100,8 +106,6 @@ pub enum ConfigError {
     Parse(#[from] toml::de::Error),
     #[error("api.token must not be empty")]
     EmptyToken,
-    #[error("sandbox.backend must be runsc or runc")]
-    InvalidBackend,
     #[error("sandbox.rootfs_dir does not exist or is not a directory: {0}")]
     MissingRootfs(PathBuf),
     #[error("tool {name} executable does not exist or is not a regular file: {path}")]
@@ -125,9 +129,6 @@ impl Config {
         let mut config: Self = toml::from_str(&fs::read_to_string(path)?)?;
         if config.api.token.trim().is_empty() {
             return Err(ConfigError::EmptyToken);
-        }
-        if config.sandbox.backend != "runsc" && config.sandbox.backend != "runc" {
-            return Err(ConfigError::InvalidBackend);
         }
         let config_dir = config_directory(path)?;
         let rootfs_candidate = resolve_path(&config_dir, config.sandbox.rootfs_dir);
@@ -297,6 +298,9 @@ rootfs_dir = "rootfs"
             Some(&config_dir.join("workspace"))
         );
         assert_eq!(config.sandbox.managed_bundle_dir, config_dir.join("bundle"));
+        assert_eq!(config.sandbox.backend, RuntimeBackend::Runsc);
+        assert_eq!(config.sandbox.network_mode, NetworkMode::Nat);
+        assert_eq!(config.features.cgroups, CgroupMode::Auto);
         assert!(!temp.path().join("workspace").exists());
         assert!(config.tools.is_empty());
     }

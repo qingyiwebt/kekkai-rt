@@ -1,4 +1,11 @@
-use super::init_support::{extract_oci_image, generated_config, write_config_if_missing};
+use super::{
+    config_template::{detect_init_features, generated_config},
+    init_support::{extract_oci_image, write_config_if_missing},
+};
+use crate::{
+    config::{CgroupMode, NetworkMode},
+    host::HostCapabilities,
+};
 use anyhow::{bail, Context};
 use std::{
     fs, io,
@@ -43,7 +50,19 @@ fn run_in(working_dir: &Path, config_path: &Path, image: &Path) -> anyhow::Resul
         let config_created = if config_path.exists() {
             false
         } else {
-            let content = generated_config(&rootfs, &workspace)?;
+            let capabilities = HostCapabilities::detect();
+            let features = detect_init_features(&capabilities);
+            if matches!(features.network_mode, NetworkMode::Host) {
+                let reasons = capabilities.nat_unavailability_reasons().join(", ");
+                eprintln!("warning: NAT is unavailable ({reasons}); generating host network mode");
+            }
+            if matches!(features.cgroups, CgroupMode::Disabled) {
+                eprintln!(
+                    "warning: memory cgroup controller is unavailable; generating disabled cgroups"
+                );
+            }
+            let content =
+                generated_config(&rootfs, &workspace, features.network_mode, features.cgroups)?;
             write_config_if_missing(config_path, &content)?
         };
         Ok::<_, anyhow::Error>(config_created)
