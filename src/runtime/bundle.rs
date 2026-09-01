@@ -1,4 +1,7 @@
-use crate::{config::SandboxConfig, proxy::ToolSocketMount};
+use crate::{
+    config::{ResolvedFeatures, SandboxConfig, UserNamespaceAction},
+    proxy::ToolSocketMount,
+};
 use anyhow::Context;
 use serde::Serialize;
 use std::{
@@ -26,6 +29,27 @@ struct OciProcess {
     args: [&'static str; 3],
     env: [&'static str; 1],
     cwd: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<OciProcessUser>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<OciCapabilities>,
+}
+
+#[derive(Serialize)]
+struct OciProcessUser {
+    uid: u32,
+    gid: u32,
+    #[serde(rename = "additionalGids")]
+    additional_gids: Vec<u32>,
+}
+
+#[derive(Serialize)]
+struct OciCapabilities {
+    bounding: Vec<&'static str>,
+    effective: Vec<&'static str>,
+    inheritable: Vec<&'static str>,
+    permitted: Vec<&'static str>,
+    ambient: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +71,10 @@ struct OciMount {
 #[derive(Serialize)]
 struct OciLinux {
     namespaces: Vec<OciNamespace>,
+    #[serde(rename = "uidMappings", skip_serializing_if = "Option::is_none")]
+    uid_mappings: Option<Vec<OciIdMapping>>,
+    #[serde(rename = "gidMappings", skip_serializing_if = "Option::is_none")]
+    gid_mappings: Option<Vec<OciIdMapping>>,
 }
 
 #[derive(Serialize)]
@@ -57,8 +85,35 @@ struct OciNamespace {
     path: Option<String>,
 }
 
+#[derive(Serialize)]
+struct OciIdMapping {
+    #[serde(rename = "containerID")]
+    container_id: u32,
+    #[serde(rename = "hostID")]
+    host_id: u32,
+    size: u32,
+}
+
+const DEFAULT_CAPABILITIES: &[&str] = &[
+    "CAP_AUDIT_WRITE",
+    "CAP_CHOWN",
+    "CAP_DAC_OVERRIDE",
+    "CAP_FOWNER",
+    "CAP_FSETID",
+    "CAP_KILL",
+    "CAP_MKNOD",
+    "CAP_NET_BIND_SERVICE",
+    "CAP_NET_RAW",
+    "CAP_SETFCAP",
+    "CAP_SETGID",
+    "CAP_SETPCAP",
+    "CAP_SETUID",
+    "CAP_SYS_CHROOT",
+];
+
 pub fn prepare_managed_bundle(
     cfg: &SandboxConfig,
+    features: &ResolvedFeatures,
     attachment: &NetworkAttachment,
     configured_mounts: &BTreeMap<PathBuf, PathBuf>,
     tool_mounts: Option<&[ToolSocketMount]>,
@@ -101,13 +156,41 @@ pub fn prepare_managed_bundle(
         }
     }
 
-    let mut namespaces = standard_namespaces();
+    let mut namespaces = standard_namespaces(features);
     if let NetworkAttachment::Isolated { namespace_path } = attachment {
         namespaces.push(OciNamespace {
             kind: "network",
             path: namespace_path.clone(),
         });
     }
+
+    let (user, capabilities, uid_mappings, gid_mappings) = match features.user_namespace {
+        UserNamespaceAction::Use(mapping) => (
+            Some(OciProcessUser {
+                uid: 0,
+                gid: 0,
+                additional_gids: vec![0],
+            }),
+            Some(OciCapabilities {
+                bounding: DEFAULT_CAPABILITIES.to_vec(),
+                effective: DEFAULT_CAPABILITIES.to_vec(),
+                inheritable: DEFAULT_CAPABILITIES.to_vec(),
+                permitted: DEFAULT_CAPABILITIES.to_vec(),
+                ambient: DEFAULT_CAPABILITIES.to_vec(),
+            }),
+            Some(vec![OciIdMapping {
+                container_id: mapping.uid.container_id,
+                host_id: mapping.uid.host_id,
+                size: mapping.uid.size,
+            }]),
+            Some(vec![OciIdMapping {
+                container_id: mapping.gid.container_id,
+                host_id: mapping.gid.host_id,
+                size: mapping.gid.size,
+            }]),
+        ),
+        UserNamespaceAction::Ignore => (None, None, None, None),
+    };
 
     let spec = OciSpec {
         oci_version: "1.0.2",
@@ -116,6 +199,8 @@ pub fn prepare_managed_bundle(
             args: ["/bin/sh", "-c", "while :; do sleep 3600; done"],
             env: ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
             cwd: "/",
+            user,
+            capabilities,
         },
         root: OciRoot {
             path: cfg.rootfs_dir.to_string_lossy().into_owned(),
@@ -123,7 +208,11 @@ pub fn prepare_managed_bundle(
         },
         hostname: "kekkai-rt",
         mounts,
-        linux: OciLinux { namespaces },
+        linux: OciLinux {
+            namespaces,
+            uid_mappings,
+            gid_mappings,
+        },
     };
 
     let serialized = serde_json::to_vec_pretty(&spec).context("serialize managed OCI config")?;
@@ -192,8 +281,12 @@ fn standard_mounts() -> Vec<OciMount> {
     ]
 }
 
-fn standard_namespaces() -> Vec<OciNamespace> {
-    ["pid", "mount", "ipc", "uts", "cgroup"]
+fn standard_namespaces(features: &ResolvedFeatures) -> Vec<OciNamespace> {
+    let mut kinds = vec!["pid", "mount", "ipc", "uts", "cgroup"];
+    if matches!(features.user_namespace, UserNamespaceAction::Use(_)) {
+        kinds.push("user");
+    }
+    kinds
         .into_iter()
         .map(|kind| OciNamespace { kind, path: None })
         .collect()
@@ -202,8 +295,35 @@ fn standard_namespaces() -> Vec<OciNamespace> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{CgroupAction, ResolvedFeatures, UserNamespaceAction};
     use serde_json::Value;
     use tempfile::tempdir;
+
+    fn features() -> ResolvedFeatures {
+        ResolvedFeatures {
+            cgroups: CgroupAction::Ignore,
+            user_namespace: UserNamespaceAction::Ignore,
+        }
+    }
+
+    fn user_namespace_features() -> ResolvedFeatures {
+        use crate::runtime::host::{IdMapping, UserNamespaceMapping};
+        ResolvedFeatures {
+            cgroups: CgroupAction::Ignore,
+            user_namespace: UserNamespaceAction::Use(UserNamespaceMapping {
+                uid: IdMapping {
+                    container_id: 0,
+                    host_id: 100_000,
+                    size: 65_536,
+                },
+                gid: IdMapping {
+                    container_id: 0,
+                    host_id: 100_000,
+                    size: 65_536,
+                },
+            }),
+        }
+    }
 
     #[test]
     fn generated_config_contains_rootfs_system_mounts_and_workspace() {
@@ -225,6 +345,7 @@ rootfs_dir = "."
         mounts.insert(PathBuf::from("/workspace"), workspace.clone());
         let bundle = prepare_managed_bundle(
             &cfg,
+            &features(),
             &NetworkAttachment::Isolated {
                 namespace_path: Some("/run/netns/kekkai-rtns".into()),
             },
@@ -267,6 +388,7 @@ rootfs_dir = "."
 
         let bundle = prepare_managed_bundle(
             &cfg,
+            &features(),
             &NetworkAttachment::Isolated {
                 namespace_path: None,
             },
@@ -301,8 +423,14 @@ rootfs_dir = "."
             toml::from_str("rootfs_dir = \".\"\nnetwork_mode = \"host\"").unwrap();
         cfg.rootfs_dir = rootfs;
         cfg.managed_bundle_dir = temp.path().join("bundle");
-        let bundle =
-            prepare_managed_bundle(&cfg, &NetworkAttachment::Host, &BTreeMap::new(), None).unwrap();
+        let bundle = prepare_managed_bundle(
+            &cfg,
+            &features(),
+            &NetworkAttachment::Host,
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
         let spec: Value =
             serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
         assert!(spec["linux"]["namespaces"]
@@ -310,5 +438,48 @@ rootfs_dir = "."
             .unwrap()
             .iter()
             .all(|namespace| namespace["type"] != "network"));
+    }
+
+    #[test]
+    fn generated_config_contains_user_namespace_mappings_and_capability_allowlist() {
+        let temp = tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir_all(rootfs.join("bin")).unwrap();
+        fs::write(rootfs.join("bin/sh"), b"placeholder").unwrap();
+        let mut cfg: SandboxConfig = toml::from_str("rootfs_dir = \".\"").unwrap();
+        cfg.rootfs_dir = rootfs;
+        cfg.managed_bundle_dir = temp.path().join("bundle");
+
+        let bundle = prepare_managed_bundle(
+            &cfg,
+            &user_namespace_features(),
+            &NetworkAttachment::Host,
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+        let spec: Value =
+            serde_json::from_slice(&fs::read(bundle.join("config.json")).unwrap()).unwrap();
+        assert!(spec["linux"]["namespaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|namespace| namespace["type"] == "user"));
+        assert_eq!(spec["linux"]["uidMappings"][0]["containerID"], 0);
+        assert_eq!(spec["linux"]["uidMappings"][0]["hostID"], 100_000);
+        assert_eq!(spec["process"]["user"]["uid"], 0);
+        assert_eq!(spec["process"]["user"]["additionalGids"][0], 0);
+        let capabilities = spec["process"]["capabilities"].as_object().unwrap();
+        let expected = capabilities["effective"].as_array().unwrap();
+        assert_eq!(capabilities["bounding"].as_array().unwrap(), expected);
+        assert_eq!(capabilities["inheritable"].as_array().unwrap(), expected);
+        assert_eq!(capabilities["permitted"].as_array().unwrap(), expected);
+        assert_eq!(capabilities["ambient"].as_array().unwrap(), expected);
+        assert!(!expected
+            .iter()
+            .any(|capability| capability == "CAP_NET_ADMIN"));
+        assert!(!expected
+            .iter()
+            .any(|capability| capability == "CAP_SYS_ADMIN"));
     }
 }

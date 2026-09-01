@@ -76,15 +76,6 @@ pub(crate) async fn start(
 ) -> anyhow::Result<Sandbox> {
     let instance_id = super::instance::id(cfg);
     let instance_lock = super::instance::acquire_lock(cfg)?;
-    let sysroot_issues = crate::maintenance::sysroot::sysroot_issues(cfg, mounts);
-    if !sysroot_issues.is_empty() {
-        let details = sysroot_issues
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        bail!("sandbox sysroot is not ready: {details}; run `kekkai-rt fix` to repair directories");
-    }
     let resolved = cfg
         .resolved()
         .map_err(|error| anyhow!("invalid sandbox configuration: {error}"))?;
@@ -93,6 +84,26 @@ pub(crate) async fn start(
     let resolved_features = features
         .resolve(&capabilities)
         .map_err(|error| anyhow!("resolve runtime features: {error}"))?;
+    let sysroot_issues = crate::maintenance::sysroot::sysroot_issues(cfg, mounts);
+    let mut all_sysroot_issues = sysroot_issues;
+    all_sysroot_issues.extend(crate::maintenance::sysroot::identity_issues(
+        cfg,
+        resolved_features.user_namespace,
+    ));
+    if !all_sysroot_issues.is_empty() {
+        let details = all_sysroot_issues
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("sandbox sysroot is not ready: {details}; run `kekkai-rt fix` to repair directories");
+    }
+    if matches!(
+        features.user_namespace,
+        crate::config::UserNamespaceMode::Disabled
+    ) {
+        warn!("user namespace is disabled; sandbox root runs with runtime-provided host identity");
+    }
     if matches!(settings.mode, NetworkMode::Nat) && !capabilities.nat_available() {
         let reasons = capabilities.nat_unavailability_reasons().join(", ");
         bail!("sandbox network_mode=nat requires Linux network administration and route/netfilter support; unavailable: {reasons}; use network_mode=\"host\" or grant the missing capability");
@@ -141,6 +152,7 @@ pub(crate) async fn start(
     let tool_mounts = resources.proxy_mounts();
     let bundle_dir = match bundle::prepare_managed_bundle(
         cfg,
+        &resolved_features,
         resources
             .network
             .as_ref()

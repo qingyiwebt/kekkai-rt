@@ -161,13 +161,20 @@ impl Sandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::NetworkMode;
+    use crate::config::{CgroupMode, FeaturesConfig, NetworkMode, UserNamespaceMode};
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
     };
     use tempfile::tempdir;
+
+    fn test_features() -> FeaturesConfig {
+        FeaturesConfig {
+            cgroups: CgroupMode::Auto,
+            user_namespace: UserNamespaceMode::Disabled,
+        }
+    }
 
     struct FakeRuntime {
         executable: PathBuf,
@@ -254,7 +261,7 @@ esac
         let fake = FakeRuntime::new(temp.path());
         let sandbox = Sandbox::start_with_test_program(
             &fake.config(temp.path()),
-            &FeaturesConfig::default(),
+            &test_features(),
             &BTreeMap::new(),
             &HashMap::new(),
             &fake.executable,
@@ -321,7 +328,7 @@ esac
 
         let error = match Sandbox::start_with_test_program(
             &fake.config(temp.path()),
-            &FeaturesConfig::default(),
+            &test_features(),
             &BTreeMap::new(),
             &HashMap::new(),
             &fake.executable,

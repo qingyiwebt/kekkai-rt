@@ -16,6 +16,8 @@ network_dns = ["1.1.1.1", "8.8.8.8"]
 [features]
 # auto, required, or disabled. Auto disables cgroups when memory is unavailable.
 cgroups = "auto"
+# enabled by default; set to "disabled" only for legacy runtime compatibility.
+user_namespace = "enabled"
 
 [mounts]
 "/workspace" = "./workspace"

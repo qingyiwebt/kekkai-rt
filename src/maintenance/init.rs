@@ -65,6 +65,19 @@ fn run_in(working_dir: &Path, config_path: &Path, image: &Path) -> anyhow::Resul
                 generated_config(&rootfs, &workspace, features.network_mode, features.cgroups)?;
             write_config_if_missing(config_path, &content)?
         };
+        let installed_config = crate::config::Config::load(config_path)
+            .context("load installed configuration for rootfs identity preparation")?;
+        let capabilities = HostCapabilities::detect();
+        let resolved_features = installed_config
+            .features
+            .resolve(&capabilities)
+            .map_err(|error| anyhow::anyhow!("resolve runtime features: {error}"))?;
+        super::sysroot::fix_sysroot_with_identity(
+            &installed_config.sandbox,
+            &installed_config.mounts,
+            resolved_features.user_namespace,
+        )
+        .context("prepare rootfs ownership for user namespace")?;
         Ok::<_, anyhow::Error>(config_created)
     })();
 

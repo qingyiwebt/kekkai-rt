@@ -10,6 +10,9 @@ pub(super) fn net_admin_available() -> bool {
     has_cap_net_admin(&status)
 }
 pub(super) fn has_cap_net_admin(status: &str) -> bool {
+    capability_available(status, 12)
+}
+pub(super) fn capability_available(status: &str, bit: u8) -> bool {
     let Some(value) = status
         .lines()
         .find_map(|line| line.strip_prefix("CapEff:").map(str::trim))
@@ -17,7 +20,7 @@ pub(super) fn has_cap_net_admin(status: &str) -> bool {
         return false;
     };
     u64::from_str_radix(value, 16)
-        .map(|effective| effective & (1 << 12) != 0)
+        .map(|effective| effective & (1u64 << bit) != 0)
         .unwrap_or(false)
 }
 #[cfg(target_os = "linux")]

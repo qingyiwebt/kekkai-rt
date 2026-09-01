@@ -24,6 +24,7 @@ network_dns = ["1.1.1.1", "8.8.8.8"]
 
 [features]
 cgroups = "auto" # auto, required, or disabled
+user_namespace = "enabled" # enabled or disabled
 
 [mounts]
 "/workspace" = "./workspace" # optional host bind mount
@@ -31,13 +32,13 @@ cgroups = "auto" # auto, required, or disabled
 
 The sandbox network is configured in the `[sandbox]` section. `network_mode = "nat"` is the default and creates an isolated bridge/veth network with outbound NAT. `network_mode = "host"` shares the host network namespace, while `network_mode = "none"` keeps the container isolated from external networks. NAT mode requires root (or `CAP_NET_ADMIN`) and Linux route/netfilter Netlink support. When using `runsc`, host and none modes are translated to the corresponding runtime network flags automatically.
 
-The optional `[features]` section controls host-dependent runtime features. `cgroups = "auto"` is the default and uses cgroups when the host exposes the memory controller, otherwise it starts runsc with `--ignore-cgroups`. Use `required` to fail when the memory controller is unavailable, or `disabled` to always skip cgroup setup. `init` detects the current host capabilities when it creates a new configuraion: it chooses NAT when its permissions and dependencies are available, otherwise host networking, and records the matching cgroup setting.
+The optional `[features]` section controls host-dependent runtime features. `cgroups = "auto"` is the default and uses cgroups when the host exposes the memory controller, otherwise it starts runsc with `--ignore-cgroups`. Use `required` to fail when the memory controller is unavailable, or `disabled` to always skip cgroup setup. `user_namespace = "enabled"` is the secure default: startup reads a 65536-entry subordinate UID/GID range from `/etc/subuid` and `/etc/subgid`, and `fix` prepares rootfs ownership for that mapping. Set it to `disabled` only for legacy runtime compatibility; this runs the container with the runtime-provided host identity and prints a warning. `init` detects the current host capabilities when it creates a new configuration: it chooses NAT when its permissions and dependencies are available, otherwise host networking, and records the matching cgroup setting.
 
 The container belongs to the Kekkai Runtime process. Kekkai Runtime starts `runc` or `runsc` in foreground mode, waits for accepted execution tasks during graceful shutdown, then kills and deletes the instance-specific container and removes its session veth. The bridge and Kekkai Runtime nftables rules are retained as shared, idempotently managed host resources. Each configuration directory gets its own container, network namespace, and veth names; multiple instances must still use non-conflicting configured network addresses.
 
 For NAT mode, `network_bridge`, `network_subnet`, `network_gateway`, `network_ip`, and `network_dns` control the managed bridge, container address, default route, and resolver configuration. Kekkai Runtime generates the complete OCI `config.json`, including the rootfs, standard system mounts, namespaces, and all entries from `[mounts]`. Container mount paths must be absolute; host paths may be absolute or relative to `config.toml`.
 
-Changes made under the container root filesystem are persistent. For the `runsc` backend, Kekkai Runtime disables gVisor's default temporary rootfs overlay so writes go directly to `rootfs_dir` and remain available after the container is stopped and recreated. The `/proc`, `/sys`, `/dev`, `/dev/shm`, and `/sys/fs/cgroup` mounts remain runtime-managed filesystems; use `[mounts]` for data that should be kept separately from the rootfs.
+Changes made under the container root filesystem are persistent. Each configuration should use its own rootfs directory; Kekkai Runtime does not use OverlayFS or copy the rootfs. For the `runsc` backend, Kekkai Runtime disables gVisor's default temporary rootfs overlay so writes go directly to `rootfs_dir` and remain available after the container is stopped and recreated. With user namespaces enabled, run `kekkai-rt fix` once after provisioning the rootfs so its numeric ownership is shifted into the configured subordinate range. The `/proc`, `/sys`, `/dev`, `/dev/shm`, and `/sys/fs/cgroup` mounts remain runtime-managed filesystems; use `[mounts]` for data that should be kept separately from the rootfs. Explicit bind mounts retain their existing host write semantics.
 
 All network fields are validated at startup. The bridge name must be a valid Linux interface name, the gateway and container address must belong to the configured subnet, and DNS entries must be IPv4 addresses. Relative paths are resolved from the directory containing `config.toml`.
 

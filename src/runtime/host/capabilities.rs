@@ -4,6 +4,7 @@ use super::{cgroups, probe};
 pub struct HostCapabilities {
     pub cgroups: CgroupCapabilities,
     pub network: NetworkCapabilities,
+    pub user_namespace: super::UserNamespaceCapabilities,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CgroupCapabilities {
@@ -27,6 +28,7 @@ impl HostCapabilities {
                 route_netlink: probe::route_netlink_available(),
                 netfilter_netlink: probe::netfilter_netlink_available(),
             },
+            user_namespace: super::userns::detect(),
         }
     }
     pub fn nat_available(&self) -> bool {
@@ -34,6 +36,12 @@ impl HostCapabilities {
     }
     pub fn nat_unavailability_reasons(&self) -> Vec<&'static str> {
         self.network.unavailability_reasons()
+    }
+    pub fn user_namespace_available(&self) -> bool {
+        self.user_namespace.available()
+    }
+    pub fn user_namespace_unavailability_reasons(&self) -> Vec<&'static str> {
+        self.user_namespace.unavailability_reasons()
     }
     #[cfg(test)]
     pub fn for_test(
@@ -50,6 +58,23 @@ impl HostCapabilities {
                 net_admin,
                 route_netlink,
                 netfilter_netlink,
+            },
+            user_namespace: super::UserNamespaceCapabilities {
+                namespace: true,
+                setuid: true,
+                setgid: true,
+                mapping: Some(super::UserNamespaceMapping {
+                    uid: super::IdMapping {
+                        container_id: 0,
+                        host_id: 100_000,
+                        size: super::userns::ID_MAP_SIZE,
+                    },
+                    gid: super::IdMapping {
+                        container_id: 0,
+                        host_id: 100_000,
+                        size: super::userns::ID_MAP_SIZE,
+                    },
+                }),
             },
         }
     }

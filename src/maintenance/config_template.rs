@@ -49,7 +49,10 @@ pub fn generated_config(
             network_dns: vec!["1.1.1.1".into(), "8.8.8.8".into()],
             managed_bundle_dir: Default::default(),
         },
-        features: FeaturesConfig { cgroups },
+        features: FeaturesConfig {
+            cgroups,
+            ..FeaturesConfig::default()
+        },
         mounts: [("/workspace".into(), workspace.to_path_buf())]
             .into_iter()
             .collect(),

@@ -1,6 +1,8 @@
 use super::sysroot;
 use crate::{
-    config::{CgroupAction, CgroupMode, Config, NetworkMode},
+    config::{
+        CgroupAction, CgroupMode, Config, NetworkMode, UserNamespaceAction, UserNamespaceMode,
+    },
     runtime::host::HostCapabilities,
     runtime::Sandbox,
 };
@@ -46,22 +48,44 @@ pub async fn inspect(config: &Config) -> CheckReport {
     };
     let capabilities = HostCapabilities::detect();
 
-    match config.features.resolve(&capabilities) {
+    let resolved_features = match config.features.resolve(&capabilities) {
         Ok(resolved) if matches!(resolved.cgroups, CgroupAction::Use) => {
             report.lines.push(format!(
                 "[ok] cgroups enabled ({})",
                 config.features.cgroups.as_str()
-            ))
+            ));
+            Some(resolved)
         }
-        Ok(_) if matches!(config.features.cgroups, CgroupMode::Disabled) => report
-            .lines
-            .push("[ok] cgroups disabled by configuration".into()),
-        Ok(_) => report.lines.push(
-            "[warning] cgroups disabled: memory controller is unavailable (auto mode)".into(),
-        ),
+        Ok(resolved) if matches!(config.features.cgroups, CgroupMode::Disabled) => {
+            report
+                .lines
+                .push("[ok] cgroups disabled by configuration".into());
+            Some(resolved)
+        }
+        Ok(resolved) => {
+            report.lines.push(
+                "[warning] cgroups disabled: memory controller is unavailable (auto mode)".into(),
+            );
+            Some(resolved)
+        }
         Err(error) => {
-            report.lines.push(format!("[error] cgroups: {error}"));
+            report
+                .lines
+                .push(format!("[error] runtime features: {error}"));
             report.failures += 1;
+            None
+        }
+    };
+
+    if matches!(config.features.user_namespace, UserNamespaceMode::Disabled) {
+        report
+            .lines
+            .push("[warning] user namespace disabled by configuration".into());
+    } else if let Some(resolved) = resolved_features {
+        if matches!(resolved.user_namespace, UserNamespaceAction::Use(_)) {
+            report
+                .lines
+                .push("[ok] user namespace and subordinate UID/GID mappings".into());
         }
     }
 
@@ -72,6 +96,12 @@ pub async fn inspect(config: &Config) -> CheckReport {
             .push("[ok] sysroot mountpoints and /bin/sh".into());
     } else {
         for issue in sysroot_issues {
+            report.lines.push(format!("[error] sysroot: {issue}"));
+            report.failures += 1;
+        }
+    }
+    if let Some(resolved) = resolved_features {
+        for issue in sysroot::identity_issues(&config.sandbox, resolved.user_namespace) {
             report.lines.push(format!("[error] sysroot: {issue}"));
             report.failures += 1;
         }

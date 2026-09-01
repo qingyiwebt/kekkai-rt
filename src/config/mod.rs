@@ -4,7 +4,10 @@ mod model;
 mod network;
 mod runtime;
 
-pub use features::{CgroupAction, CgroupMode, FeaturesConfig};
+pub use features::{
+    CgroupAction, CgroupMode, FeaturesConfig, ResolvedFeatures, UserNamespaceAction,
+    UserNamespaceMode,
+};
 pub use load::ConfigError;
 pub use model::{ApiConfig, Config, SandboxConfig, ToolConfig};
 pub use network::{Ipv4Cidr, NetworkMode, NetworkSettings};
