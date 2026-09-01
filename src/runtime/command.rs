@@ -4,14 +4,14 @@ use tokio::process::Command;
 use tracing::debug;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CommandSpec {
-    pub(super) program: String,
-    pub(super) args: Vec<String>,
-    pub(super) context: &'static str,
+pub struct CommandSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub context: &'static str,
 }
 
 impl CommandSpec {
-    pub(super) fn new<I, S>(program: impl Into<String>, args: I, context: &'static str) -> Self
+    pub fn new<I, S>(program: impl Into<String>, args: I, context: &'static str) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -25,35 +25,35 @@ impl CommandSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CommandOutput {
+pub struct CommandOutput {
     success: bool,
     stderr: String,
 }
 
 impl CommandOutput {
-    pub(super) fn new(success: bool, stderr: impl Into<String>) -> Self {
+    pub fn new(success: bool, stderr: impl Into<String>) -> Self {
         Self {
             success,
             stderr: stderr.into(),
         }
     }
 
-    pub(super) fn success(&self) -> bool {
+    pub fn success(&self) -> bool {
         self.success
     }
 
-    pub(super) fn stderr(&self) -> &str {
+    pub fn stderr(&self) -> &str {
         &self.stderr
     }
 }
 
 #[async_trait]
-pub(super) trait CommandExecutor: Send + Sync {
+pub trait CommandExecutor: Send + Sync {
     async fn execute(&self, command: &CommandSpec) -> anyhow::Result<CommandOutput>;
 }
 
 #[derive(Default)]
-pub(super) struct TokioCommandExecutor;
+pub struct TokioCommandExecutor;
 
 #[async_trait]
 impl CommandExecutor for TokioCommandExecutor {

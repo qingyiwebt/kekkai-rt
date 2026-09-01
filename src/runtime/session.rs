@@ -5,16 +5,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::{process::Child, sync::Mutex};
 use tracing::info;
 
-pub(super) struct ContainerSession {
-    pub(super) runtime: RuntimeClient,
-    pub(super) child: Mutex<Option<Child>>,
-    pub(super) network: Mutex<Option<NetworkSession>>,
-    pub(super) proxy: Option<ToolProxy>,
+pub struct ContainerSession {
+    pub runtime: RuntimeClient,
+    pub child: Mutex<Option<Child>>,
+    pub network: Mutex<Option<NetworkSession>>,
+    pub proxy: Option<ToolProxy>,
     stopped: AtomicBool,
 }
 
 impl ContainerSession {
-    pub(super) fn new(
+    pub fn new(
         runtime: RuntimeClient,
         child: Child,
         network: NetworkSession,
@@ -29,7 +29,7 @@ impl ContainerSession {
         }
     }
 
-    pub(super) async fn configure_network(
+    pub async fn configure_network(
         &self,
         settings: &crate::config::NetworkSettings,
         pid: i32,
@@ -49,7 +49,7 @@ impl ContainerSession {
         .await
     }
 
-    pub(super) async fn shutdown(&self) -> anyhow::Result<()> {
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
         if self.stopped.swap(true, Ordering::AcqRel) {
             return Ok(());
         }

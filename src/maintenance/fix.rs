@@ -3,7 +3,7 @@ use crate::config::Config;
 use anyhow::{bail, Context};
 use std::path::Path;
 
-pub(crate) async fn run(config_path: &Path) -> anyhow::Result<()> {
+pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     let config = Config::load(config_path).context("load configuration")?;
     println!("Repairing {}", config_path.display());
     let changed = sysroot::fix_sysroot(&config.sandbox, &config.mounts)

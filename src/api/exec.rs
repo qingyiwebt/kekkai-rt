@@ -1,5 +1,5 @@
 use super::AppState;
-use crate::tasks::{Event, ExecRequest};
+use crate::runtime::tasks::{Event, ExecRequest};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -13,7 +13,7 @@ use serde_json::json;
 use std::convert::Infallible;
 use uuid::Uuid;
 
-pub(super) async fn create(
+pub async fn create(
     State(state): State<AppState>,
     Json(request): Json<ExecRequest>,
 ) -> impl IntoResponse {
@@ -27,20 +27,14 @@ pub(super) async fn create(
     }
 }
 
-pub(super) async fn snapshot(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
+pub async fn snapshot(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     match state.execution.snapshot(id).await {
         Some(snapshot) => Json(snapshot).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-pub(super) async fn cancel(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
+pub async fn cancel(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     if state.execution.cancel(id).await {
         StatusCode::NO_CONTENT.into_response()
     } else if state.execution.snapshot(id).await.is_some() {
@@ -50,10 +44,7 @@ pub(super) async fn cancel(
     }
 }
 
-pub(super) async fn events(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
+pub async fn events(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     let Some((history, mut receiver)) = state.execution.subscribe(id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };

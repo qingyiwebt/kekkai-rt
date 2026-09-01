@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
 };
 
-pub(super) async fn check(
+pub async fn check(
     State(state): State<AppState>,
     req: Request<Body>,
     next: Next,

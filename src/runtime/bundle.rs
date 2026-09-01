@@ -57,7 +57,7 @@ struct OciNamespace {
     path: Option<String>,
 }
 
-pub(super) fn prepare_managed_bundle(
+pub fn prepare_managed_bundle(
     cfg: &SandboxConfig,
     attachment: &NetworkAttachment,
     configured_mounts: &BTreeMap<PathBuf, PathBuf>,

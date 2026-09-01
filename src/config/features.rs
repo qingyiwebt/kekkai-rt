@@ -1,7 +1,7 @@
-use crate::host::HostCapabilities;
-use serde::Deserialize;
+use crate::runtime::host::HostCapabilities;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CgroupMode {
     #[default]
@@ -11,7 +11,7 @@ pub enum CgroupMode {
 }
 
 impl CgroupMode {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::Required => "required",
@@ -20,7 +20,7 @@ impl CgroupMode {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FeaturesConfig {
     #[serde(default)]
@@ -28,21 +28,18 @@ pub struct FeaturesConfig {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ResolvedFeatures {
-    pub(crate) cgroups: CgroupAction,
+pub struct ResolvedFeatures {
+    pub cgroups: CgroupAction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CgroupAction {
+pub enum CgroupAction {
     Use,
     Ignore,
 }
 
 impl FeaturesConfig {
-    pub(crate) fn resolve(
-        &self,
-        capabilities: &HostCapabilities,
-    ) -> Result<ResolvedFeatures, String> {
+    pub fn resolve(&self, capabilities: &HostCapabilities) -> Result<ResolvedFeatures, String> {
         let cgroups = match self.cgroups {
             CgroupMode::Auto if capabilities.cgroups.memory_controller => CgroupAction::Use,
             CgroupMode::Auto => CgroupAction::Ignore,
@@ -65,7 +62,7 @@ impl FeaturesConfig {
 #[cfg(test)]
 mod tests {
     use super::{CgroupMode, FeaturesConfig};
-    use crate::host::HostCapabilities;
+    use crate::runtime::host::HostCapabilities;
 
     fn capabilities(memory_cgroup: bool) -> HostCapabilities {
         HostCapabilities::for_test(memory_cgroup, true, true, true, true)

@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     config::{CgroupMode, NetworkMode},
-    host::HostCapabilities,
+    runtime::host::HostCapabilities,
 };
 use anyhow::{bail, Context};
 use std::{
@@ -13,7 +13,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub(crate) async fn run(config_path: &Path, image: &Path) -> anyhow::Result<()> {
+pub async fn run(config_path: &Path, image: &Path) -> anyhow::Result<()> {
     let working_dir = fs::canonicalize(".").context("resolve current directory")?;
     run_in(&working_dir, config_path, image)
 }

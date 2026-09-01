@@ -52,7 +52,7 @@ Authorization: Bearer <api.token>
 | `DELETE` | `/v1/workspace` | 删除工作区根目录（始终拒绝） | 是 |
 | `DELETE` | `/v1/workspace/{path}` | 删除文件或目录 | 是 |
 
-工作区接口只有在配置了 `[sandbox].workspace_dir` 后才可用；未配置时返回 `404`。
+工作区接口只有在 `[mounts]` 中配置了精确的 `"/workspace"` 映射后才可用；未配置时返回 `404`。
 
 ## 健康检查
 
@@ -233,7 +233,7 @@ data: {"exit_code":0}
 
 ## 工作区文件
 
-工作区 API 操作的是配置项 `[sandbox].workspace_dir` 指定的宿主机目录。该目录同时会以 `/workspace` 的形式挂载到沙箱容器中（如果配置了工作区）。
+工作区 API 操作的是 `[mounts]` 中 `"/workspace"` 映射指定的宿主机目录；该目录同时会挂载到沙箱容器的 `/workspace`。
 
 所有工作区接口都需要 Bearer Token。路径中的每个组件应单独进行 URL 编码，例如：
 

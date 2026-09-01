@@ -1,9 +1,11 @@
 mod auth;
 mod exec;
 mod workspace;
+mod workspace_service;
 
 use crate::{
-    config::Config, execution::ExecutionService, runtime::Sandbox, workspace::WorkspaceService,
+    config::Config,
+    runtime::{execution::ExecutionService, Sandbox},
 };
 use axum::{
     middleware,
@@ -12,13 +14,16 @@ use axum::{
     Json, Router,
 };
 use serde_json::json;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub(crate) auth_token: Arc<str>,
-    pub(crate) execution: Arc<ExecutionService>,
-    pub(crate) workspace: WorkspaceService,
+    pub auth_token: Arc<str>,
+    pub execution: Arc<ExecutionService>,
+    workspace_root: Option<PathBuf>,
 }
 
 impl AppState {
@@ -28,14 +33,11 @@ impl AppState {
             .resolved()
             .map(|settings| settings.max_timeout)
             .unwrap_or_else(|_| std::time::Duration::from_secs(config.sandbox.max_timeout_seconds));
-        let workspace = config
-            .mounts
-            .get(std::path::Path::new("/workspace"))
-            .cloned();
+        let workspace_root = config.mounts.get(Path::new("/workspace")).cloned();
         Self {
             auth_token: Arc::from(config.api.token),
             execution: Arc::new(ExecutionService::new(sandbox, max_timeout)),
-            workspace: WorkspaceService::new(workspace),
+            workspace_root,
         }
     }
 
@@ -183,5 +185,22 @@ rootfs_dir = "."
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn workspace_routes_are_unavailable_without_a_workspace_mount() {
+        let app = router(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/workspace")
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 }

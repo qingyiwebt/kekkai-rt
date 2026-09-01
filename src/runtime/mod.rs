@@ -1,84 +1,30 @@
+mod args;
 mod bundle;
 mod command;
 mod container;
+pub(crate) mod execution;
+pub(crate) mod host;
+mod instance;
+mod lifecycle;
 mod network;
+mod network_ops;
 mod process;
 mod session;
+pub(crate) mod tasks;
 
-use crate::{
-    config::{FeaturesConfig, NetworkMode, SandboxConfig, ToolConfig},
-    host::HostCapabilities,
-    proxy::ToolProxy,
-    tasks::ExecRequest,
-};
-use anyhow::{anyhow, bail, Context};
-use command::{CommandExecutor, TokioCommandExecutor};
-use network::NetworkSession;
-use process::{RuntimeClient, RuntimePlan};
-use session::ContainerSession;
-use sha2::{Digest, Sha256};
+use crate::config::{FeaturesConfig, SandboxConfig, ToolConfig};
+use anyhow::anyhow;
+use process::RuntimeClient;
 use std::{
     collections::{BTreeMap, HashMap},
-    fs::{self, File},
-    os::unix::io::AsRawFd,
+    fs::File,
     sync::Arc,
-    time::Duration,
 };
-use tokio::time::{sleep, timeout, Instant};
-use tracing::{debug, info, warn};
-
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-const STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+use tasks::ExecRequest;
 
 pub struct Sandbox {
-    session: Option<Arc<ContainerSession>>,
-    _instance_lock: Option<File>,
-}
-
-struct StartupResources {
-    network: Option<NetworkSession>,
-    proxy: Option<ToolProxy>,
-}
-
-enum RuntimeProgram {
-    Configured,
-    #[cfg(test)]
-    Test(std::path::PathBuf),
-}
-
-impl StartupResources {
-    fn new(network: NetworkSession) -> Self {
-        Self {
-            network: Some(network),
-            proxy: None,
-        }
-    }
-
-    fn proxy_mounts(&self) -> Option<Vec<crate::proxy::ToolSocketMount>> {
-        self.proxy.as_ref().map(ToolProxy::socket_mounts)
-    }
-
-    fn into_parts(mut self) -> (NetworkSession, Option<ToolProxy>) {
-        (
-            self.network
-                .take()
-                .expect("startup resources contain a network session"),
-            self.proxy.take(),
-        )
-    }
-
-    async fn cleanup(mut self) {
-        if let Some(proxy) = self.proxy.take() {
-            if let Err(error) = proxy.shutdown().await {
-                warn!(error = %error, "startup tool proxy cleanup failed");
-            }
-        }
-        if let Some(network) = self.network.take() {
-            if let Err(error) = network.cleanup().await {
-                warn!(error = %error, "startup network cleanup failed");
-            }
-        }
-    }
+    pub(crate) session: Option<Arc<session::ContainerSession>>,
+    pub(crate) _instance_lock: Option<File>,
 }
 
 pub use process::RunningExec;
@@ -90,12 +36,12 @@ impl Sandbox {
         mounts: &BTreeMap<std::path::PathBuf, std::path::PathBuf>,
         configured_tools: &HashMap<String, ToolConfig>,
     ) -> anyhow::Result<Self> {
-        Self::start_impl(
+        lifecycle::start(
             cfg,
             features,
             mounts,
             configured_tools,
-            RuntimeProgram::Configured,
+            lifecycle::RuntimeProgram::Configured,
         )
         .await
     }
@@ -108,204 +54,14 @@ impl Sandbox {
         configured_tools: &HashMap<String, ToolConfig>,
         program: &std::path::Path,
     ) -> anyhow::Result<Self> {
-        Self::start_impl(
+        lifecycle::start(
             cfg,
             features,
             mounts,
             configured_tools,
-            RuntimeProgram::Test(program.to_owned()),
+            lifecycle::RuntimeProgram::Test(program.to_owned()),
         )
         .await
-    }
-
-    async fn start_impl(
-        cfg: &SandboxConfig,
-        features: &FeaturesConfig,
-        mounts: &BTreeMap<std::path::PathBuf, std::path::PathBuf>,
-        configured_tools: &HashMap<String, ToolConfig>,
-        runtime_program: RuntimeProgram,
-    ) -> anyhow::Result<Self> {
-        let instance_id = instance_id(cfg);
-        let instance_lock = acquire_instance_lock(cfg)?;
-        let sysroot_issues = crate::maintenance::sysroot::sysroot_issues(cfg, mounts);
-        if !sysroot_issues.is_empty() {
-            let details = sysroot_issues
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!(
-                "sandbox sysroot is not ready: {details}; run `kekkai-rt fix` to repair directories"
-            );
-        }
-
-        let resolved = cfg
-            .resolved()
-            .map_err(|error| anyhow!("invalid sandbox configuration: {error}"))?;
-        let settings = &resolved.network;
-        let capabilities = HostCapabilities::detect();
-        let resolved_features = features
-            .resolve(&capabilities)
-            .map_err(|error| anyhow!("resolve runtime features: {error}"))?;
-        if matches!(settings.mode, NetworkMode::Nat) && !capabilities.nat_available() {
-            let reasons = capabilities.nat_unavailability_reasons().join(", ");
-            bail!(
-                "sandbox network_mode=nat requires CAP_NET_ADMIN and executable ip, nsenter, and iptables; unavailable: {reasons}; use network_mode=\"host\" or grant the missing capability"
-            );
-        }
-        let plan = RuntimePlan::from_settings(
-            resolved.backend,
-            settings.mode,
-            resolved_features.cgroups,
-            !configured_tools.is_empty(),
-        );
-        let runtime = match runtime_program {
-            RuntimeProgram::Configured => RuntimeClient::new(plan, &instance_id),
-            #[cfg(test)]
-            RuntimeProgram::Test(program) => RuntimeClient::new_with_program(
-                plan,
-                &instance_id,
-                program.to_string_lossy().into_owned(),
-            ),
-        };
-        Self::probe_program(runtime.program())
-            .await
-            .with_context(|| {
-                format!(
-                    "runtime {} is not installed; install it before starting Kekkai Runtime",
-                    runtime.program()
-                )
-            })?;
-
-        runtime.remove().await?;
-        let command_executor: Arc<dyn CommandExecutor> = Arc::new(TokioCommandExecutor);
-        let network = network::prepare_network(settings, &instance_id, command_executor)
-            .await
-            .context("prepare sandbox network")?;
-        let mut resources = StartupResources::new(network);
-        resources.proxy = match ToolProxy::start(cfg, configured_tools).await {
-            Ok(proxy) => proxy,
-            Err(error) => {
-                resources.cleanup().await;
-                return Err(error.context("start tool proxy"));
-            }
-        };
-        let tool_mounts = resources.proxy_mounts();
-        let bundle_dir = match bundle::prepare_managed_bundle(
-            cfg,
-            resources
-                .network
-                .as_ref()
-                .expect("startup resources contain a network session")
-                .attachment(),
-            mounts,
-            tool_mounts.as_deref(),
-        ) {
-            Ok(path) => path,
-            Err(error) => {
-                resources.cleanup().await;
-                return Err(error);
-            }
-        };
-
-        info!(
-            runtime = %runtime.program(),
-            container_id = %runtime.container_id(),
-            bundle = %bundle_dir.display(),
-            network_mode = %settings.mode.as_str(),
-            "starting sandbox container"
-        );
-
-        let child = match runtime.spawn_container(&bundle_dir) {
-            Ok(child) => child,
-            Err(error) => {
-                resources.cleanup().await;
-                return Err(error);
-            }
-        };
-        let (network, tool_proxy) = resources.into_parts();
-        let session = Arc::new(ContainerSession::new(runtime, child, network, tool_proxy));
-        let sandbox = Self {
-            session: Some(session),
-            _instance_lock: Some(instance_lock),
-        };
-
-        let startup = async {
-            let state = sandbox.wait_until_running().await?;
-            let session = sandbox
-                .session
-                .as_ref()
-                .expect("running sandbox has a container session");
-            session
-                .configure_network(settings, state.pid)
-                .await
-                .context("configure sandbox network")?;
-            info!(
-                runtime = %session.runtime.program(),
-                container_id = %session.runtime.container_id(),
-                pid = state.pid,
-                "sandbox container is ready"
-            );
-            Ok::<_, anyhow::Error>(())
-        };
-
-        if let Err(error) = timeout(STARTUP_TIMEOUT, startup)
-            .await
-            .context("wait for sandbox startup")?
-        {
-            if let Err(cleanup_error) = sandbox.shutdown().await {
-                warn!(error = %cleanup_error, "sandbox startup cleanup failed");
-            }
-            return Err(error);
-        }
-
-        Ok(sandbox)
-    }
-
-    async fn wait_until_running(&self) -> anyhow::Result<container::RuncState> {
-        let session = self
-            .session
-            .as_ref()
-            .expect("running sandbox has a container session");
-        let deadline = Instant::now() + STARTUP_TIMEOUT;
-        loop {
-            if let Some(state) = session.runtime.state().await? {
-                return Ok(state);
-            }
-
-            {
-                let mut child = session.child.lock().await;
-                if let Some(child) = child.as_mut() {
-                    if let Some(status) = child.try_wait()? {
-                        container::log_runtime_exit(
-                            session.runtime.program(),
-                            session.runtime.container_id(),
-                            status,
-                        );
-                        bail!(
-                            "runtime {} exited before container {} became ready",
-                            session.runtime.program(),
-                            session.runtime.container_id()
-                        );
-                    }
-                } else {
-                    bail!("sandbox runtime exited before the container became ready");
-                }
-            }
-            if Instant::now() >= deadline {
-                bail!(
-                    "container {} did not become ready within {} seconds",
-                    session.runtime.container_id(),
-                    STARTUP_TIMEOUT.as_secs()
-                );
-            }
-            debug!(
-                runtime = %session.runtime.program(),
-                container_id = %session.runtime.container_id(),
-                "waiting for sandbox container state"
-            );
-            sleep(STATE_POLL_INTERVAL).await;
-        }
     }
 
     pub async fn shutdown(&self) -> anyhow::Result<()> {
@@ -315,7 +71,7 @@ impl Sandbox {
         session.shutdown().await
     }
 
-    pub(crate) async fn probe_program(program: &str) -> anyhow::Result<()> {
+    pub async fn probe_program(program: &str) -> anyhow::Result<()> {
         RuntimeClient::probe(program).await
     }
 
@@ -328,7 +84,7 @@ impl Sandbox {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_instance() -> Self {
+    pub fn test_instance() -> Self {
         Self {
             session: None,
             _instance_lock: None,
@@ -336,48 +92,10 @@ impl Sandbox {
     }
 }
 
-fn instance_id(cfg: &SandboxConfig) -> String {
-    let source = cfg.managed_bundle_dir.to_string_lossy();
-    let digest = Sha256::digest(source.as_bytes());
-    let suffix = digest[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("kekkai-rt-{suffix}")
-}
-
-fn acquire_instance_lock(cfg: &SandboxConfig) -> anyhow::Result<File> {
-    fs::create_dir_all(&cfg.managed_bundle_dir).with_context(|| {
-        format!(
-            "create managed bundle directory {}",
-            cfg.managed_bundle_dir.display()
-        )
-    })?;
-    let path = cfg.managed_bundle_dir.join(".lock");
-    let file = File::options()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&path)
-        .with_context(|| format!("open sandbox instance lock {}", path.display()))?;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result != 0 {
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::WouldBlock {
-            bail!(
-                "sandbox instance is already running for {}",
-                cfg.managed_bundle_dir.display()
-            );
-        }
-        return Err(error).context("acquire sandbox instance lock");
-    }
-    Ok(file)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::NetworkMode;
     use std::{
         fs,
         os::unix::fs::PermissionsExt,

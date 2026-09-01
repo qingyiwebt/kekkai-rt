@@ -4,12 +4,12 @@ use tokio::process::Command;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Deserialize)]
-pub(super) struct RuncState {
-    pub(super) pid: i32,
-    pub(super) status: String,
+pub struct RuncState {
+    pub pid: i32,
+    pub status: String,
 }
 
-pub(super) async fn read_state(runtime: &str, id: &str) -> anyhow::Result<Option<RuncState>> {
+pub async fn read_state(runtime: &str, id: &str) -> anyhow::Result<Option<RuncState>> {
     let output = Command::new(runtime)
         .args(["state", id])
         .output()
@@ -35,7 +35,7 @@ pub(super) async fn read_state(runtime: &str, id: &str) -> anyhow::Result<Option
     }
 }
 
-pub(super) async fn remove(runtime: &str, id: &str) -> anyhow::Result<()> {
+pub async fn remove(runtime: &str, id: &str) -> anyhow::Result<()> {
     debug!(runtime, container_id = id, "removing container state");
     match Command::new(runtime)
         .args(["kill", id, "KILL"])
@@ -74,7 +74,7 @@ fn is_missing_error(stderr: &[u8]) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn configure_parent_death_signal(command: &mut Command) {
+pub fn configure_parent_death_signal(command: &mut Command) {
     use std::io;
 
     // The parent-death signal is inherited by the runtime process only. The
@@ -95,9 +95,9 @@ pub(super) fn configure_parent_death_signal(command: &mut Command) {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(super) fn configure_parent_death_signal(_command: &mut Command) {}
+pub fn configure_parent_death_signal(_command: &mut Command) {}
 
-pub(super) fn log_runtime_exit(runtime: &str, id: &str, status: std::process::ExitStatus) {
+pub fn log_runtime_exit(runtime: &str, id: &str, status: std::process::ExitStatus) {
     if status.success() {
         info!(runtime, container_id = id, "foreground runtime exited");
     } else {

@@ -1,6 +1,6 @@
 use crate::{
     config::{CgroupAction, NetworkMode, RuntimeBackend},
-    tasks::ExecRequest,
+    runtime::tasks::ExecRequest,
 };
 use anyhow::{anyhow, bail, Context};
 use std::{path::Path, process::Stdio};
@@ -10,6 +10,7 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
+use super::args::{probe_args, run_args};
 use super::container::{self, RuncState};
 
 pub struct RunningExec {
@@ -20,23 +21,23 @@ pub struct RunningExec {
 }
 
 #[derive(Clone)]
-pub(super) struct RuntimeClient {
+pub struct RuntimeClient {
     plan: RuntimePlan,
     container_id: String,
     program: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct RuntimePlan {
-    pub(super) backend: RuntimeBackend,
-    pub(super) network_mode: NetworkMode,
-    pub(super) cgroups: CgroupAction,
-    pub(super) allow_host_uds: bool,
-    pub(super) persist_rootfs: bool,
+pub struct RuntimePlan {
+    pub backend: RuntimeBackend,
+    pub network_mode: NetworkMode,
+    pub cgroups: CgroupAction,
+    pub allow_host_uds: bool,
+    pub persist_rootfs: bool,
 }
 
 impl RuntimePlan {
-    pub(super) fn from_settings(
+    pub fn from_settings(
         backend: RuntimeBackend,
         network_mode: NetworkMode,
         cgroups: CgroupAction,
@@ -51,13 +52,13 @@ impl RuntimePlan {
         }
     }
 
-    pub(super) fn program(&self) -> &'static str {
+    pub fn program(&self) -> &'static str {
         self.backend.as_str()
     }
 }
 
 impl RuntimeClient {
-    pub(super) fn new(plan: RuntimePlan, container_id: impl Into<String>) -> Self {
+    pub fn new(plan: RuntimePlan, container_id: impl Into<String>) -> Self {
         Self {
             program: plan.program().into(),
             plan,
@@ -66,7 +67,7 @@ impl RuntimeClient {
     }
 
     #[cfg(test)]
-    pub(super) fn new_with_program(
+    pub fn new_with_program(
         plan: RuntimePlan,
         container_id: impl Into<String>,
         program: impl Into<String>,
@@ -78,19 +79,19 @@ impl RuntimeClient {
         }
     }
 
-    pub(super) fn program(&self) -> &str {
+    pub fn program(&self) -> &str {
         &self.program
     }
 
-    pub(super) fn container_id(&self) -> &str {
+    pub fn container_id(&self) -> &str {
         &self.container_id
     }
 
-    pub(super) fn backend(&self) -> RuntimeBackend {
+    pub fn backend(&self) -> RuntimeBackend {
         self.plan.backend
     }
 
-    pub(super) async fn probe(program: &str) -> anyhow::Result<()> {
+    pub async fn probe(program: &str) -> anyhow::Result<()> {
         let version_args = probe_args(program);
         let output = Command::new(program)
             .args(version_args)
@@ -108,15 +109,15 @@ impl RuntimeClient {
         Ok(())
     }
 
-    pub(super) async fn state(&self) -> anyhow::Result<Option<RuncState>> {
+    pub async fn state(&self) -> anyhow::Result<Option<RuncState>> {
         container::read_state(&self.program, &self.container_id).await
     }
 
-    pub(super) async fn remove(&self) -> anyhow::Result<()> {
+    pub async fn remove(&self) -> anyhow::Result<()> {
         container::remove(&self.program, &self.container_id).await
     }
 
-    pub(super) fn spawn_container(&self, bundle_dir: &Path) -> anyhow::Result<Child> {
+    pub fn spawn_container(&self, bundle_dir: &Path) -> anyhow::Result<Child> {
         let mut command = Command::new(&self.program);
         command
             .args(run_args(&self.plan, bundle_dir, &self.container_id))
@@ -146,7 +147,7 @@ impl RuntimeClient {
         Ok(child)
     }
 
-    pub(super) async fn exec(&self, req: &ExecRequest) -> anyhow::Result<RunningExec> {
+    pub async fn exec(&self, req: &ExecRequest) -> anyhow::Result<RunningExec> {
         if req.argv.is_empty() {
             return Err(anyhow!("argv must not be empty"));
         }
@@ -180,7 +181,7 @@ impl RuntimeClient {
         })
     }
 
-    pub(super) async fn stop(&self, mut child: Child) -> Vec<anyhow::Error> {
+    pub async fn stop(&self, mut child: Child) -> Vec<anyhow::Error> {
         let mut errors = Vec::new();
         match child.try_wait() {
             Ok(None) => {
@@ -207,47 +208,12 @@ impl RuntimeClient {
     }
 }
 
-fn run_args(plan: &RuntimePlan, bundle_dir: &Path, container_id: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    if plan.backend.is_runsc() {
-        if plan.allow_host_uds {
-            args.push("--host-uds=open".into());
-        }
-        if matches!(plan.cgroups, CgroupAction::Ignore) {
-            args.push("--ignore-cgroups".into());
-        }
-        match plan.network_mode {
-            NetworkMode::Host => args.push("--network=host".into()),
-            NetworkMode::None => args.push("--network=none".into()),
-            NetworkMode::Nat => {}
-        }
-        if plan.persist_rootfs {
-            // runsc enables a writable rootfs overlay by default. Disable it so
-            // writes go to the configured rootfs directory and survive container
-            // deletion and the next Kekkai Runtime startup.
-            args.push("--overlay2=none".into());
-        }
-    }
-    args.extend([
-        "run".into(),
-        "--bundle".into(),
-        bundle_dir.to_string_lossy().into_owned(),
-        container_id.into(),
-    ]);
-    args
-}
-
-fn probe_args(program: &str) -> &'static [&'static str] {
-    if program == "ip" {
-        &["-V"]
-    } else {
-        &["--version"]
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{probe_args, run_args, RuntimeClient, RuntimePlan};
+    use super::{
+        super::args::{probe_args, run_args},
+        RuntimeClient, RuntimePlan,
+    };
     use crate::config::{CgroupAction, NetworkMode, RuntimeBackend};
 
     #[test]

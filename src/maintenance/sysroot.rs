@@ -17,9 +17,9 @@ const MOUNTPOINTS: &[&str] = &[
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SysrootIssue {
-    pub(crate) path: PathBuf,
-    pub(crate) reason: &'static str,
+pub struct SysrootIssue {
+    pub path: PathBuf,
+    pub reason: &'static str,
 }
 
 impl std::fmt::Display for SysrootIssue {
@@ -28,7 +28,7 @@ impl std::fmt::Display for SysrootIssue {
     }
 }
 
-pub(crate) fn sysroot_issues(
+pub fn sysroot_issues(
     config: &SandboxConfig,
     mounts: &BTreeMap<PathBuf, PathBuf>,
 ) -> Vec<SysrootIssue> {
@@ -90,14 +90,14 @@ pub(crate) fn sysroot_issues(
     issues
 }
 
-pub(crate) fn fix_sysroot(
+pub fn fix_sysroot(
     config: &SandboxConfig,
     mounts: &BTreeMap<PathBuf, PathBuf>,
 ) -> std::io::Result<Vec<PathBuf>> {
     prepare_sysroot(&config.rootfs_dir, mounts)
 }
 
-pub(crate) fn prepare_sysroot(
+pub fn prepare_sysroot(
     rootfs_dir: &Path,
     mounts: &BTreeMap<PathBuf, PathBuf>,
 ) -> std::io::Result<Vec<PathBuf>> {

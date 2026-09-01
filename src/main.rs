@@ -1,20 +1,8 @@
-mod api;
-mod config;
-mod execution;
-mod host;
-mod maintenance;
-mod proxy;
-mod runtime;
-mod tasks;
-mod workspace;
-
-use anyhow::Context;
 use clap::Parser;
-use config::Config;
-use maintenance::Command;
-use runtime::Sandbox;
-use std::{path::PathBuf, sync::Arc};
-use tracing::info;
+use kekkai_rt::maintenance::{self, Command};
+use std::path::PathBuf;
+
+mod application;
 
 #[derive(Parser, Debug)]
 #[command(name = "kekkai-rt")]
@@ -30,59 +18,8 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
     let args = Args::parse();
     match args.command {
-        None => run_server(&args.config).await,
+        None => application::run_server(&args.config).await,
         Some(command) => maintenance::run(command, &args.config).await,
-    }
-}
-
-async fn run_server(config_path: &std::path::Path) -> anyhow::Result<()> {
-    let config = Config::load(config_path).context("load configuration")?;
-    let sandbox = Arc::new(
-        Sandbox::start(
-            &config.sandbox,
-            &config.features,
-            &config.mounts,
-            &config.tools,
-        )
-        .await
-        .context("start sandbox")?,
-    );
-    let state = api::AppState::new(config.clone(), sandbox.clone());
-    let app = api::router(state.clone());
-    let listener = match tokio::net::TcpListener::bind(config.api.listen_addr).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            if let Err(cleanup_error) = sandbox.shutdown().await {
-                return Err(anyhow::anyhow!(
-                    "bind API listener: {error}; sandbox shutdown failed: {cleanup_error}"
-                ));
-            }
-            return Err(error.into());
-        }
-    };
-    info!(address = %listener.local_addr()?, backend = %config.sandbox.backend, "kekkai-rt listening");
-    let server_result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
-        .await;
-    info!("HTTP server stopped; shutting down sandbox");
-    let shutdown_result = state.shutdown().await;
-    match (server_result, shutdown_result) {
-        (Err(server_error), Err(shutdown_error)) => Err(anyhow::anyhow!(
-            "server failed: {server_error}; sandbox shutdown failed: {shutdown_error}"
-        )),
-        (Err(error), Ok(())) => Err(error.into()),
-        (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
-    }
-}
-
-async fn shutdown() {
-    use tokio::signal::unix::{signal, SignalKind};
-
-    let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => info!("received Ctrl-C"),
-        _ = terminate.recv() => info!("received SIGTERM"),
     }
 }
 
@@ -106,11 +43,11 @@ mod tests {
     #[test]
     fn maintenance_commands_accept_config_before_or_after_subcommand() {
         let before = Args::try_parse_from(["kekkai-rt", "--config", "one.toml", "check"]).unwrap();
-        assert!(matches!(before.command, Some(maintenance::Command::Check)));
+        assert!(matches!(before.command, Some(Command::Check)));
         assert_eq!(before.config, PathBuf::from("one.toml"));
 
         let after = Args::try_parse_from(["kekkai-rt", "fix", "--config", "two.toml"]).unwrap();
-        assert!(matches!(after.command, Some(maintenance::Command::Fix)));
+        assert!(matches!(after.command, Some(Command::Fix)));
         assert_eq!(after.config, PathBuf::from("two.toml"));
     }
 
@@ -119,7 +56,7 @@ mod tests {
         let args = Args::try_parse_from(["kekkai-rt", "init", "image.tar"]).unwrap();
         assert!(matches!(
             args.command,
-            Some(maintenance::Command::Init { image }) if image == PathBuf::from("image.tar")
+            Some(Command::Init { image }) if image == *"image.tar"
         ));
         assert!(
             Args::try_parse_from(["kekkai-rt", "init", "alpine", "--version", "3.24.1"]).is_err()

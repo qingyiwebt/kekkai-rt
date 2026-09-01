@@ -1,8 +1,8 @@
 use super::{NetworkSettings, SandboxConfig};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{fmt, time::Duration};
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RuntimeBackend {
     Runsc,
@@ -10,14 +10,14 @@ pub enum RuntimeBackend {
 }
 
 impl RuntimeBackend {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Runsc => "runsc",
             Self::Runc => "runc",
         }
     }
 
-    pub(crate) fn is_runsc(self) -> bool {
+    pub fn is_runsc(self) -> bool {
         matches!(self, Self::Runsc)
     }
 }
@@ -29,14 +29,14 @@ impl fmt::Display for RuntimeBackend {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SandboxSettings {
-    pub(crate) backend: RuntimeBackend,
-    pub(crate) max_timeout: Duration,
-    pub(crate) network: NetworkSettings,
+pub struct SandboxSettings {
+    pub backend: RuntimeBackend,
+    pub max_timeout: Duration,
+    pub network: NetworkSettings,
 }
 
 impl SandboxConfig {
-    pub(crate) fn resolved(&self) -> Result<SandboxSettings, String> {
+    pub fn resolved(&self) -> Result<SandboxSettings, String> {
         Ok(SandboxSettings {
             backend: self.backend,
             max_timeout: Duration::from_secs(self.max_timeout_seconds),

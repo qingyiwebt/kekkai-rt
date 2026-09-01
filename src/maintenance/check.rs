@@ -1,13 +1,13 @@
 use super::sysroot;
 use crate::{
     config::{CgroupAction, CgroupMode, Config, NetworkMode},
-    host::HostCapabilities,
+    runtime::host::HostCapabilities,
     runtime::Sandbox,
 };
 use anyhow::{bail, Context};
 use std::path::Path;
 
-pub(crate) async fn run(config_path: &Path) -> anyhow::Result<()> {
+pub async fn run(config_path: &Path) -> anyhow::Result<()> {
     let config = Config::load(config_path).context("load configuration")?;
     println!("Checking {}", config_path.display());
     let report = inspect(&config).await;
@@ -19,24 +19,24 @@ pub(crate) async fn run(config_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) struct CheckReport {
+pub struct CheckReport {
     lines: Vec<String>,
     failures: usize,
 }
 
 impl CheckReport {
-    pub(crate) fn print(&self) {
+    pub fn print(&self) {
         for line in &self.lines {
             println!("{line}");
         }
     }
 
-    pub(crate) fn failures(&self) -> usize {
+    pub fn failures(&self) -> usize {
         self.failures
     }
 }
 
-pub(crate) async fn inspect(config: &Config) -> CheckReport {
+pub async fn inspect(config: &Config) -> CheckReport {
     let mut report = CheckReport {
         lines: vec![
             "[ok] configuration".into(),
