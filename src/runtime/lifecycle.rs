@@ -95,7 +95,7 @@ pub(crate) async fn start(
         .map_err(|error| anyhow!("resolve runtime features: {error}"))?;
     if matches!(settings.mode, NetworkMode::Nat) && !capabilities.nat_available() {
         let reasons = capabilities.nat_unavailability_reasons().join(", ");
-        bail!("sandbox network_mode=nat requires CAP_NET_ADMIN and executable ip, nsenter, and iptables; unavailable: {reasons}; use network_mode=\"host\" or grant the missing capability");
+        bail!("sandbox network_mode=nat requires Linux network administration and route/netfilter support; unavailable: {reasons}; use network_mode=\"host\" or grant the missing capability");
     }
     let plan = RuntimePlan::from_settings(
         resolved.backend,
@@ -122,7 +122,12 @@ pub(crate) async fn start(
         })?;
     runtime.remove().await?;
     let executor: Arc<dyn CommandExecutor> = Arc::new(TokioCommandExecutor);
-    let network = super::network::prepare_network(settings, &instance_id, executor)
+    let network = super::network::prepare_network(
+        settings,
+        &instance_id,
+        super::network_ops::default_backend(),
+        executor,
+    )
         .await
         .context("prepare sandbox network")?;
     let mut resources = StartupResources::new(network);

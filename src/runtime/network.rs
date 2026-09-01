@@ -2,9 +2,13 @@ use crate::config::{NetworkMode, NetworkSettings, RuntimeBackend};
 use std::sync::Arc;
 use tracing::info;
 
-use super::{command::CommandExecutor, network_ops as ops};
+use super::{
+    command::CommandExecutor,
+    network_ops::{self as ops, NetworkBackend},
+};
 
 pub struct NetworkSession {
+    backend: Arc<dyn NetworkBackend>,
     executor: Arc<dyn CommandExecutor>,
     attachment: NetworkAttachment,
     host_veth: Option<String>,
@@ -18,16 +22,18 @@ pub enum NetworkAttachment {
 }
 
 impl NetworkSession {
-    pub async fn prepare(
+    pub(super) async fn prepare(
         settings: &NetworkSettings,
         instance_id: &str,
+        backend: Arc<dyn NetworkBackend>,
         executor: Arc<dyn CommandExecutor>,
     ) -> anyhow::Result<Self> {
         let (host_veth, peer_veth) = ops::veth_names(instance_id);
         let netns_name = format!("kekkai-rt-ns-{instance_id}");
-        ops::cleanup_resources(executor.as_ref(), &host_veth, &netns_name).await;
+        ops::cleanup_resources(backend.as_ref(), &host_veth, &netns_name).await;
         if !matches!(settings.mode, NetworkMode::Nat) {
             return Ok(Self {
+                backend,
                 executor,
                 attachment: if matches!(settings.mode, NetworkMode::Host) {
                     NetworkAttachment::Host
@@ -40,10 +46,10 @@ impl NetworkSession {
                 netns_name: None,
             });
         }
-        ops::ensure_bridge(executor.as_ref(), settings).await?;
-        ops::ensure_nat_rules(executor.as_ref(), settings).await?;
+        ops::ensure_bridge(backend.as_ref(), settings).await?;
+        ops::ensure_nat_rules(backend.as_ref(), settings).await?;
         ops::prepare_nat(
-            executor.as_ref(),
+            backend.as_ref(),
             settings,
             &host_veth,
             &peer_veth,
@@ -51,6 +57,7 @@ impl NetworkSession {
         )
         .await?;
         Ok(Self {
+            backend,
             executor,
             attachment: NetworkAttachment::Isolated {
                 namespace_path: Some(format!("/run/netns/{netns_name}")),
@@ -76,9 +83,7 @@ impl NetworkSession {
         match settings.mode {
             NetworkMode::Host => Ok(()),
             NetworkMode::None if backend.is_runsc() => Ok(()),
-            NetworkMode::None => {
-                ops::nsenter_ip(self.executor.as_ref(), pid, ["link", "set", "lo", "up"]).await
-            }
+            NetworkMode::None => self.backend.configure_none(pid).await,
             NetworkMode::Nat => {
                 ops::configure_dns(self.executor.as_ref(), settings, runtime, container_id).await
             }
@@ -87,7 +92,7 @@ impl NetworkSession {
 
     pub async fn cleanup(self) -> anyhow::Result<()> {
         if let (Some(host_veth), Some(netns_name)) = (self.host_veth, self.netns_name) {
-            ops::cleanup_resources(self.executor.as_ref(), &host_veth, &netns_name).await;
+            ops::cleanup_resources(self.backend.as_ref(), &host_veth, &netns_name).await;
         }
         Ok(())
     }
@@ -96,9 +101,10 @@ impl NetworkSession {
 pub async fn prepare_network(
     settings: &NetworkSettings,
     instance_id: &str,
+    backend: Arc<dyn NetworkBackend>,
     executor: Arc<dyn CommandExecutor>,
 ) -> anyhow::Result<NetworkSession> {
-    NetworkSession::prepare(settings, instance_id, executor).await
+    NetworkSession::prepare(settings, instance_id, backend, executor).await
 }
 
 pub async fn configure_network(
@@ -117,42 +123,92 @@ pub async fn configure_network(
 #[cfg(test)]
 mod tests {
     use super::super::command::{CommandExecutor, CommandOutput, CommandSpec};
+    use super::super::network_ops::NetworkBackend;
     use super::{ops, prepare_network, NetworkAttachment, NetworkSession};
     use crate::config::{NetworkMode, RuntimeBackend, SandboxConfig};
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
-    struct FakeExecutor {
-        commands: Mutex<Vec<CommandSpec>>,
-        failed_context: Option<&'static str>,
+    struct FakeBackend {
+        operations: Mutex<Vec<&'static str>>,
+        fail_prepare: bool,
     }
-    impl FakeExecutor {
-        fn new(failed_context: Option<&'static str>) -> Arc<Self> {
+
+    impl FakeBackend {
+        fn new(fail_prepare: bool) -> Arc<Self> {
             Arc::new(Self {
-                commands: Mutex::new(Vec::new()),
-                failed_context,
+                operations: Mutex::new(Vec::new()),
+                fail_prepare,
             })
         }
-        fn commands(&self) -> Vec<CommandSpec> {
-            self.commands.lock().unwrap().clone()
+
+        fn operations(&self) -> Vec<&'static str> {
+            self.operations.lock().unwrap().clone()
+        }
+
+        fn record(&self, operation: &'static str) {
+            self.operations.lock().unwrap().push(operation);
+        }
+    }
+
+    #[async_trait]
+    impl NetworkBackend for FakeBackend {
+        async fn prepare_nat(
+            &self,
+            _settings: &crate::config::NetworkSettings,
+            host_veth: &str,
+            _peer_veth: &str,
+            netns_name: &str,
+        ) -> anyhow::Result<()> {
+            self.record("prepare_nat");
+            if self.fail_prepare {
+                self.cleanup_resources(host_veth, netns_name).await;
+                anyhow::bail!("fake network setup failure");
+            }
+            Ok(())
+        }
+
+        async fn cleanup_resources(&self, _host_veth: &str, _netns_name: &str) {
+            self.record("cleanup_resources");
+        }
+
+        async fn ensure_bridge(
+            &self,
+            _settings: &crate::config::NetworkSettings,
+        ) -> anyhow::Result<()> {
+            self.record("ensure_bridge");
+            Ok(())
+        }
+
+        async fn ensure_nat_rules(
+            &self,
+            _settings: &crate::config::NetworkSettings,
+        ) -> anyhow::Result<()> {
+            self.record("ensure_nat_rules");
+            Ok(())
+        }
+
+        async fn configure_none(&self, _pid: i32) -> anyhow::Result<()> {
+            self.record("configure_none");
+            Ok(())
+        }
+    }
+
+    struct FakeExecutor {
+        commands: Mutex<Vec<CommandSpec>>,
+    }
+    impl FakeExecutor {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                commands: Mutex::new(Vec::new()),
+            })
         }
     }
     #[async_trait]
     impl CommandExecutor for FakeExecutor {
         async fn execute(&self, command: &CommandSpec) -> anyhow::Result<CommandOutput> {
             self.commands.lock().unwrap().push(command.clone());
-            let success = self.failed_context != Some(command.context)
-                && !matches!(
-                    command.context,
-                    "remove sandbox host veth"
-                        | "remove sandbox network namespace"
-                        | "check sandbox bridge"
-                        | "check sandbox NAT firewall rule"
-                );
-            Ok(CommandOutput::new(
-                success,
-                if success { "" } else { "fake command failure" },
-            ))
+            Ok(CommandOutput::new(true, ""))
         }
     }
     fn settings(mode: NetworkMode) -> crate::config::NetworkSettings {
@@ -171,67 +227,67 @@ mod tests {
     }
     #[tokio::test]
     async fn nat_prepares_unique_peer_then_renames_it_inside_namespace() {
-        let executor = FakeExecutor::new(None);
+        let backend = FakeBackend::new(false);
+        let executor = FakeExecutor::new();
         let session = prepare_network(
             &settings(NetworkMode::Nat),
             "kekkai-rt-0123456789",
+            backend.clone(),
             executor.clone(),
         )
         .await
         .unwrap();
-        let commands = executor.commands();
-        let add_veth = commands
-            .iter()
-            .position(|command| command.context == "create sandbox veth pair")
-            .unwrap();
-        let move_peer = commands
-            .iter()
-            .position(|command| command.context == "move sandbox veth into network namespace")
-            .unwrap();
-        let rename_peer = commands
-            .iter()
-            .position(|command| {
-                command.args
-                    == vec![
-                        "netns",
-                        "exec",
-                        "kekkai-rt-ns-kekkai-rt-0123456789",
-                        "ip",
-                        "link",
-                        "set",
-                        "kc-p-0123456789",
-                        "name",
-                        "eth0",
-                    ]
-            })
-            .unwrap();
-        assert!(add_veth < move_peer && move_peer < rename_peer);
-        assert_eq!(commands[add_veth].args[7], "kc-p-0123456789");
+        assert_eq!(
+            backend.operations(),
+            vec![
+                "cleanup_resources",
+                "ensure_bridge",
+                "ensure_nat_rules",
+                "prepare_nat"
+            ]
+        );
+        assert_eq!(
+            session.attachment(),
+            &NetworkAttachment::Isolated {
+                namespace_path: Some(
+                    "/run/netns/kekkai-rt-ns-kekkai-rt-0123456789".to_owned()
+                )
+            }
+        );
         session.cleanup().await.unwrap();
+        assert_eq!(
+            backend.operations().last().copied(),
+            Some("cleanup_resources")
+        );
     }
     #[tokio::test]
     async fn nat_failure_cleans_namespace_and_host_veth() {
-        let executor = FakeExecutor::new(Some("create sandbox veth pair"));
+        let backend = FakeBackend::new(true);
         assert!(prepare_network(
             &settings(NetworkMode::Nat),
             "kekkai-rt-0123456789",
-            executor.clone()
+            backend.clone(),
+            FakeExecutor::new(),
         )
         .await
         .is_err());
-        let commands = executor.commands();
-        assert!(commands
-            .iter()
-            .any(|command| command.context == "remove sandbox host veth"));
-        assert!(commands
-            .iter()
-            .any(|command| command.context == "remove sandbox network namespace"));
+        assert_eq!(
+            backend.operations(),
+            vec![
+                "cleanup_resources",
+                "ensure_bridge",
+                "ensure_nat_rules",
+                "prepare_nat",
+                "cleanup_resources"
+            ]
+        );
     }
     #[tokio::test]
-    async fn runsc_none_skips_nsenter_but_runc_configures_loopback() {
-        let executor = FakeExecutor::new(None);
+    async fn runsc_none_skips_namespace_configuration_but_runc_configures_loopback() {
+        let backend = FakeBackend::new(false);
         let session = NetworkSession {
-            executor: executor.clone(),
+            backend: backend.clone(),
+            executor: FakeExecutor::new(),
             attachment: NetworkAttachment::Isolated {
                 namespace_path: None,
             },
@@ -248,10 +304,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(executor
-            .commands()
-            .iter()
-            .all(|command| command.program != "nsenter"));
+        assert!(backend.operations().is_empty());
         session
             .configure(
                 &settings(NetworkMode::None),
@@ -262,9 +315,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(executor
-            .commands()
-            .iter()
-            .any(|command| command.program == "nsenter"));
+        assert_eq!(backend.operations(), vec!["configure_none"]);
     }
 }

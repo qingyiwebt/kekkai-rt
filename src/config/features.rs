@@ -65,7 +65,7 @@ mod tests {
     use crate::runtime::host::HostCapabilities;
 
     fn capabilities(memory_cgroup: bool) -> HostCapabilities {
-        HostCapabilities::for_test(memory_cgroup, true, true, true, true)
+        HostCapabilities::for_test(memory_cgroup, true, true, true)
     }
 
     #[test]

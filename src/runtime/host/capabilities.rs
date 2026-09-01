@@ -12,9 +12,8 @@ pub struct CgroupCapabilities {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetworkCapabilities {
     net_admin: bool,
-    ip: bool,
-    nsenter: bool,
-    iptables: bool,
+    route_netlink: bool,
+    netfilter_netlink: bool,
 }
 
 impl HostCapabilities {
@@ -25,9 +24,8 @@ impl HostCapabilities {
             },
             network: NetworkCapabilities {
                 net_admin: probe::net_admin_available(),
-                ip: probe::command_available("ip", "-V"),
-                nsenter: probe::command_available("nsenter", "--version"),
-                iptables: probe::command_available("iptables", "--version"),
+                route_netlink: probe::route_netlink_available(),
+                netfilter_netlink: probe::netfilter_netlink_available(),
             },
         }
     }
@@ -41,9 +39,8 @@ impl HostCapabilities {
     pub fn for_test(
         memory_cgroup: bool,
         net_admin: bool,
-        ip: bool,
-        nsenter: bool,
-        iptables: bool,
+        route_netlink: bool,
+        netfilter_netlink: bool,
     ) -> Self {
         Self {
             cgroups: CgroupCapabilities {
@@ -51,30 +48,26 @@ impl HostCapabilities {
             },
             network: NetworkCapabilities {
                 net_admin,
-                ip,
-                nsenter,
-                iptables,
+                route_netlink,
+                netfilter_netlink,
             },
         }
     }
 }
 impl NetworkCapabilities {
     fn nat_available(&self) -> bool {
-        self.net_admin && self.ip && self.nsenter && self.iptables
+        self.net_admin && self.route_netlink && self.netfilter_netlink
     }
     fn unavailability_reasons(&self) -> Vec<&'static str> {
         let mut reasons = Vec::new();
         if !self.net_admin {
             reasons.push("CAP_NET_ADMIN");
         }
-        if !self.ip {
-            reasons.push("ip");
+        if !self.route_netlink {
+            reasons.push("NETLINK_ROUTE");
         }
-        if !self.nsenter {
-            reasons.push("nsenter");
-        }
-        if !self.iptables {
-            reasons.push("iptables");
+        if !self.netfilter_netlink {
+            reasons.push("NETLINK_NETFILTER");
         }
         reasons
     }
@@ -85,9 +78,9 @@ mod tests {
     use super::{cgroups, probe, HostCapabilities};
     #[test]
     fn nat_requires_all_network_capabilities() {
-        let capabilities = HostCapabilities::for_test(true, true, true, true, true);
+        let capabilities = HostCapabilities::for_test(true, true, true, true);
         assert!(capabilities.nat_available());
-        let capabilities = HostCapabilities::for_test(true, false, true, true, true);
+        let capabilities = HostCapabilities::for_test(true, false, true, true);
         assert!(!capabilities.nat_available());
         assert_eq!(
             capabilities.nat_unavailability_reasons(),

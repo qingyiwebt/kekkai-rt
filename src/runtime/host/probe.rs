@@ -1,4 +1,4 @@
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::fs;
 
 pub(super) fn net_admin_available() -> bool {
     if !cfg!(target_os = "linux") {
@@ -20,25 +20,31 @@ pub(super) fn has_cap_net_admin(status: &str) -> bool {
         .map(|effective| effective & (1 << 12) != 0)
         .unwrap_or(false)
 }
-pub(super) fn command_available(program: &str, version_flag: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path).find_map(|directory| {
-            let candidate = directory.join(program);
-            match fs::metadata(&candidate) {
-                Ok(metadata)
-                    if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 =>
-                {
-                    Some(candidate)
-                }
-                _ => None,
-            }
-        })
-    }) else {
+#[cfg(target_os = "linux")]
+fn netlink_available(protocol: i32) -> bool {
+    let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, protocol) };
+    if fd < 0 {
         return false;
-    };
-    Command::new(path)
-        .arg(version_flag)
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    }
+    (unsafe { libc::close(fd) }) == 0
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn route_netlink_available() -> bool {
+    netlink_available(libc::NETLINK_ROUTE)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn route_netlink_available() -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn netfilter_netlink_available() -> bool {
+    netlink_available(libc::NETLINK_NETFILTER)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn netfilter_netlink_available() -> bool {
+    false
 }
