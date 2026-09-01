@@ -1,5 +1,5 @@
 use clap::Parser;
-use kekkai_rt::maintenance::{self, Command};
+use kekkai_rt::maintenance::{self, Command, CommandResult};
 use std::path::PathBuf;
 
 mod application;
@@ -19,7 +19,10 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.command {
         None => application::run_server(&args.config).await,
-        Some(command) => maintenance::run(command, &args.config).await,
+        Some(command) => match maintenance::run(command, &args.config).await? {
+            CommandResult::Completed => Ok(()),
+            CommandResult::Exit(code) => std::process::exit(code),
+        },
     }
 }
 
@@ -61,5 +64,40 @@ mod tests {
         assert!(
             Args::try_parse_from(["kekkai-rt", "init", "alpine", "--version", "3.24.1"]).is_err()
         );
+    }
+
+    #[test]
+    fn shell_accepts_default_and_explicit_shell_forms() {
+        let default = Args::try_parse_from(["kekkai-rt", "shell"]).unwrap();
+        assert!(matches!(default.command, Some(Command::Shell { shell: None })));
+
+        let explicit = Args::try_parse_from(["kekkai-rt", "shell", "--shell", "zsh"]).unwrap();
+        assert!(matches!(
+            explicit.command,
+            Some(Command::Shell { shell: Some(shell) }) if shell == "zsh"
+        ));
+        assert!(Args::try_parse_from(["kekkai-rt", "shell", "bash"]).is_err());
+
+        let before = Args::try_parse_from([
+            "kekkai-rt",
+            "--config",
+            "one.toml",
+            "shell",
+            "--shell",
+            "bash",
+        ])
+        .unwrap();
+        assert_eq!(before.config, PathBuf::from("one.toml"));
+
+        let after = Args::try_parse_from([
+            "kekkai-rt",
+            "shell",
+            "--shell",
+            "bash",
+            "--config",
+            "two.toml",
+        ])
+        .unwrap();
+        assert_eq!(after.config, PathBuf::from("two.toml"));
     }
 }

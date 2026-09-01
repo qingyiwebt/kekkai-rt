@@ -13,8 +13,8 @@ mod session;
 pub(crate) mod tasks;
 
 use crate::config::{FeaturesConfig, SandboxConfig, ToolConfig};
-use anyhow::anyhow;
-use process::RuntimeClient;
+use anyhow::{anyhow, bail, Context};
+use process::{RuntimeClient, RuntimePlan};
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
@@ -81,6 +81,41 @@ impl Sandbox {
             .as_ref()
             .ok_or_else(|| anyhow!("sandbox is not running"))?;
         session.runtime.exec(req).await
+    }
+
+    pub async fn exec_existing(
+        cfg: &SandboxConfig,
+        req: &ExecRequest,
+        interactive: bool,
+    ) -> anyhow::Result<RunningExec> {
+        let resolved = cfg
+            .resolved()
+            .map_err(|error| anyhow!("invalid sandbox configuration: {error}"))?;
+        let runtime = RuntimeClient::new(
+            RuntimePlan::from_settings(
+                resolved.backend,
+                resolved.network.mode,
+                crate::config::CgroupAction::Ignore,
+                false,
+            ),
+            instance::id(cfg),
+        );
+        if runtime
+            .state()
+            .await
+            .context("read existing sandbox state")?
+            .is_none()
+        {
+            bail!(
+                "sandbox container {} is not running",
+                runtime.container_id()
+            );
+        }
+        if interactive {
+            runtime.exec_interactive(req).await
+        } else {
+            runtime.exec(req).await
+        }
     }
 
     #[cfg(test)]

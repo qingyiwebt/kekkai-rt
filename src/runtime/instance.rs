@@ -45,3 +45,36 @@ pub(crate) fn acquire_lock(cfg: &SandboxConfig) -> anyhow::Result<File> {
     }
     Ok(file)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::id;
+    use crate::config::SandboxConfig;
+    use std::path::PathBuf;
+
+    fn config(bundle: &str) -> SandboxConfig {
+        let mut config: SandboxConfig = toml::from_str("rootfs_dir = '.'").unwrap();
+        config.managed_bundle_dir = PathBuf::from(bundle);
+        config
+    }
+
+    #[test]
+    fn instance_id_is_stable_for_the_same_bundle_directory() {
+        let first = id(&config("/tmp/agentcell-one/bundle"));
+        let second = id(&config("/tmp/agentcell-one/bundle"));
+        assert_eq!(first, second);
+        assert!(first.starts_with("kekkai-rt-"));
+        assert_eq!(first.len(), "kekkai-rt-".len() + 16);
+        assert!(first["kekkai-rt-".len()..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn instance_id_differs_for_different_bundle_directories() {
+        assert_ne!(
+            id(&config("/tmp/agentcell-one/bundle")),
+            id(&config("/tmp/agentcell-two/bundle"))
+        );
+    }
+}

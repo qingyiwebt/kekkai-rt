@@ -90,7 +90,13 @@ kekkai-rt --config /etc/kekkai-rt/config.toml check
 
 # Prepare ./sysroot from an OCI image archive or OCI image layout
 kekkai-rt init ./image.tar
+
+# Connect to the currently running sandbox
+kekkai-rt shell
+kekkai-rt --config /etc/kekkai-rt/config.toml shell --shell zsh
 ```
+
+`kekkai-rt shell` connects to the already-running sandbox selected by the configuration. Without `--shell`, it runs `bash` when available and falls back to `sh`; `--shell zsh` selects a specific shell. The command does not start or stop the sandbox.
 
 The sysroot maintenance commands check or repair `/proc`, `/sys`, `/dev`, `/dev/pts`, `/dev/shm`, `/dev/mqueue`, `/run`, `/sys/fs/cgroup`, and configured mount targets. Mount sources must already exist; `fix` does not create missing host sources. It does not install runtimes or modify bridge or nftables state. A normal startup refuses to continue when required sysroot paths are missing and suggests running `kekkai-rt fix`.
 

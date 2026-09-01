@@ -148,20 +148,24 @@ impl RuntimeClient {
     }
 
     pub async fn exec(&self, req: &ExecRequest) -> anyhow::Result<RunningExec> {
+        self.exec_with_options(req, false).await
+    }
+
+    pub async fn exec_interactive(&self, req: &ExecRequest) -> anyhow::Result<RunningExec> {
+        self.exec_with_options(req, true).await
+    }
+
+    async fn exec_with_options(
+        &self,
+        req: &ExecRequest,
+        interactive: bool,
+    ) -> anyhow::Result<RunningExec> {
         if req.argv.is_empty() {
             return Err(anyhow!("argv must not be empty"));
         }
         let mut command = Command::new(&self.program);
-        command.arg("exec");
-        if let Some(cwd) = &req.cwd {
-            command.args(["--cwd", cwd]);
-        }
-        for (key, value) in &req.env {
-            command.arg("--env").arg(format!("{key}={value}"));
-        }
+        command.args(self.exec_args(req, interactive));
         command
-            .arg(&self.container_id)
-            .args(&req.argv)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -170,6 +174,7 @@ impl RuntimeClient {
             container_id = %self.container_id,
             program = %req.argv.first().map(String::as_str).unwrap_or(""),
             argc = req.argv.len(),
+            interactive,
             "starting sandbox exec"
         );
         let mut child = command.spawn().context("spawn runtime exec")?;
@@ -179,6 +184,22 @@ impl RuntimeClient {
             stderr: child.stderr.take(),
             child,
         })
+    }
+
+    pub(crate) fn exec_args(&self, req: &ExecRequest, interactive: bool) -> Vec<String> {
+        let mut args = vec!["exec".to_owned()];
+        if interactive && matches!(self.plan.backend, RuntimeBackend::Runc) {
+            args.push("-i".to_owned());
+        }
+        if let Some(cwd) = &req.cwd {
+            args.extend(["--cwd".to_owned(), cwd.clone()]);
+        }
+        for (key, value) in &req.env {
+            args.extend(["--env".to_owned(), format!("{key}={value}")]);
+        }
+        args.push(self.container_id.clone());
+        args.extend(req.argv.iter().cloned());
+        args
     }
 
     pub async fn stop(&self, mut child: Child) -> Vec<anyhow::Error> {
@@ -215,6 +236,8 @@ mod tests {
         RuntimeClient, RuntimePlan,
     };
     use crate::config::{CgroupAction, NetworkMode, RuntimeBackend};
+    use crate::runtime::tasks::ExecRequest;
+    use std::collections::HashMap;
 
     #[test]
     fn uses_iproute2_compatible_version_flag() {
@@ -301,5 +324,43 @@ mod tests {
             "id",
         );
         assert_eq!(args, vec!["run", "--bundle", "/bundle", "id"]);
+    }
+
+    #[test]
+    fn interactive_exec_adds_i_only_for_runc() {
+        let request = ExecRequest {
+            argv: vec!["/bin/sh".into()],
+            cwd: None,
+            env: HashMap::new(),
+            stdin: None,
+            timeout_seconds: None,
+        };
+        let runc = RuntimeClient::new(
+            RuntimePlan::from_settings(
+                RuntimeBackend::Runc,
+                NetworkMode::Host,
+                CgroupAction::Ignore,
+                false,
+            ),
+            "container",
+        );
+        assert_eq!(
+            runc.exec_args(&request, true),
+            vec!["exec", "-i", "container", "/bin/sh"]
+        );
+
+        let runsc = RuntimeClient::new(
+            RuntimePlan::from_settings(
+                RuntimeBackend::Runsc,
+                NetworkMode::Host,
+                CgroupAction::Ignore,
+                false,
+            ),
+            "container",
+        );
+        assert_eq!(
+            runsc.exec_args(&request, true),
+            vec!["exec", "container", "/bin/sh"]
+        );
     }
 }
