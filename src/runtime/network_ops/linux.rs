@@ -363,7 +363,6 @@ fn install_nft_rules(settings: &NetworkSettings) -> anyhow::Result<()> {
             .nested_elem()
             .push_name(c"masq")
             .end_nested()
-            .end_nested()
     }, &header);
     send_ack(&mut socket, &masquerade, false)?;
     Ok(())
@@ -393,12 +392,14 @@ where
     ) -> nftables::PushExprListAttrs<nftables::PushRuleAttrs<&'a mut Vec<u8>>>,
 {
     let mut request = nftables::Request::new().op_newrule_do(header);
-    let root = request
-        .encode()
-        .push_table_bytes(NFT_TABLE)
-        .push_chain_bytes(chain);
-    let expressions = build(root.nested_expressions());
-    let _root = expressions.end_nested();
+    {
+        let root = request
+            .encode()
+            .push_table_bytes(NFT_TABLE)
+            .push_chain_bytes(chain);
+        let expressions = build(root.nested_expressions());
+        let _root = expressions.end_nested();
+    }
     request
 }
 
