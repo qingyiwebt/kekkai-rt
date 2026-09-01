@@ -4,7 +4,6 @@ use crate::{
 };
 use anyhow::{bail, Context};
 use std::path::Path;
-use tokio::io::{self, AsyncWriteExt};
 
 const DEFAULT_SHELL_SCRIPT: &str = "command -v bash >/dev/null 2>&1 && exec bash || exec sh";
 
@@ -21,41 +20,9 @@ pub async fn run(
         stdin: None,
         timeout_seconds: None,
     };
-    let mut exec = Sandbox::exec_existing(&config.sandbox, &request, true)
+    let status = Sandbox::exec_existing_attached(&config.sandbox, &request, true)
         .await
         .context("exec shell in sandbox")?;
-    let mut stdin = exec
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("runtime did not provide shell stdin"))?;
-    let mut stdout = exec
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("runtime did not provide shell stdout"))?;
-    let mut stderr = exec
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("runtime did not provide shell stderr"))?;
-
-    let stdin_task = tokio::spawn(async move {
-        let mut input = io::stdin();
-        let result = io::copy(&mut input, &mut stdin).await;
-        let _ = stdin.shutdown().await;
-        result
-    });
-    let stdout_task = tokio::spawn(async move {
-        let mut output = io::stdout();
-        io::copy(&mut stdout, &mut output).await
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut output = io::stderr();
-        io::copy(&mut stderr, &mut output).await
-    });
-
-    let status = exec.child.wait().await.context("wait for shell")?;
-    let _ = stdin_task.await;
-    forward_output(stdout_task.await.context("join shell stdout task")?)?;
-    forward_output(stderr_task.await.context("join shell stderr task")?)?;
 
     Ok(super::CommandResult::Exit(status.code().unwrap_or(1)))
 }
@@ -70,10 +37,6 @@ fn shell_argv(requested_shell: Option<&str>) -> anyhow::Result<Vec<String>> {
             DEFAULT_SHELL_SCRIPT.to_owned(),
         ]),
     }
-}
-
-fn forward_output(result: io::Result<u64>) -> anyhow::Result<()> {
-    result.map(|_| ()).context("forward shell output")
 }
 
 #[cfg(test)]

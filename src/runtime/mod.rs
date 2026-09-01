@@ -118,6 +118,37 @@ impl Sandbox {
         }
     }
 
+    pub async fn exec_existing_attached(
+        cfg: &SandboxConfig,
+        req: &ExecRequest,
+        interactive: bool,
+    ) -> anyhow::Result<std::process::ExitStatus> {
+        let resolved = cfg
+            .resolved()
+            .map_err(|error| anyhow!("invalid sandbox configuration: {error}"))?;
+        let runtime = RuntimeClient::new(
+            RuntimePlan::from_settings(
+                resolved.backend,
+                resolved.network.mode,
+                crate::config::CgroupAction::Ignore,
+                false,
+            ),
+            instance::id(cfg),
+        );
+        if runtime
+            .state()
+            .await
+            .context("read existing sandbox state")?
+            .is_none()
+        {
+            bail!(
+                "sandbox container {} is not running",
+                runtime.container_id()
+            );
+        }
+        runtime.exec_attached(req, interactive).await
+    }
+
     #[cfg(test)]
     pub fn test_instance() -> Self {
         Self {

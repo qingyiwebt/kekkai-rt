@@ -155,6 +155,36 @@ impl RuntimeClient {
         self.exec_with_options(req, true).await
     }
 
+    pub async fn exec_attached(
+        &self,
+        req: &ExecRequest,
+        interactive: bool,
+    ) -> anyhow::Result<std::process::ExitStatus> {
+        if req.argv.is_empty() {
+            return Err(anyhow!("argv must not be empty"));
+        }
+
+        let mut command = Command::new(&self.program);
+        command
+            .args(self.exec_args(req, interactive))
+            .envs(std::env::vars_os())
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        debug!(
+            runtime = %self.program,
+            container_id = %self.container_id,
+            program = %req.argv.first().map(String::as_str).unwrap_or(""),
+            argc = req.argv.len(),
+            interactive,
+            attached = true,
+            "starting attached sandbox exec"
+        );
+
+        let mut child = command.spawn().context("spawn attached runtime exec")?;
+        child.wait().await.context("wait for attached runtime exec")
+    }
+
     async fn exec_with_options(
         &self,
         req: &ExecRequest,
