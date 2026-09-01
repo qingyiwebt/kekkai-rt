@@ -128,8 +128,8 @@ pub(crate) async fn start(
         super::network_ops::default_backend(),
         executor,
     )
-        .await
-        .context("prepare sandbox network")?;
+    .await
+    .context("prepare sandbox network")?;
     let mut resources = StartupResources::new(network);
     resources.proxy = match ToolProxy::start(cfg, configured_tools).await {
         Ok(proxy) => proxy,

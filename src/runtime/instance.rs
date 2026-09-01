@@ -60,8 +60,8 @@ mod tests {
 
     #[test]
     fn instance_id_is_stable_for_the_same_bundle_directory() {
-        let first = id(&config("/tmp/agentcell-one/bundle"));
-        let second = id(&config("/tmp/agentcell-one/bundle"));
+        let first = id(&config("/tmp/kekkai-runtime-one/bundle"));
+        let second = id(&config("/tmp/kekkai-runtime-one/bundle"));
         assert_eq!(first, second);
         assert!(first.starts_with("kekkai-rt-"));
         assert_eq!(first.len(), "kekkai-rt-".len() + 16);
@@ -73,8 +73,8 @@ mod tests {
     #[test]
     fn instance_id_differs_for_different_bundle_directories() {
         assert_ne!(
-            id(&config("/tmp/agentcell-one/bundle")),
-            id(&config("/tmp/agentcell-two/bundle"))
+            id(&config("/tmp/kekkai-runtime-one/bundle")),
+            id(&config("/tmp/kekkai-runtime-two/bundle"))
         );
     }
 }

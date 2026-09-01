@@ -69,7 +69,10 @@ mod tests {
     #[test]
     fn shell_accepts_default_and_explicit_shell_forms() {
         let default = Args::try_parse_from(["kekkai-rt", "shell"]).unwrap();
-        assert!(matches!(default.command, Some(Command::Shell { shell: None })));
+        assert!(matches!(
+            default.command,
+            Some(Command::Shell { shell: None })
+        ));
 
         let explicit = Args::try_parse_from(["kekkai-rt", "shell", "--shell", "zsh"]).unwrap();
         assert!(matches!(

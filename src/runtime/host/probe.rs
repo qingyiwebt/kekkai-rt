@@ -22,7 +22,13 @@ pub(super) fn has_cap_net_admin(status: &str) -> bool {
 }
 #[cfg(target_os = "linux")]
 fn netlink_available(protocol: i32) -> bool {
-    let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, protocol) };
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            protocol,
+        )
+    };
     if fd < 0 {
         return false;
     }

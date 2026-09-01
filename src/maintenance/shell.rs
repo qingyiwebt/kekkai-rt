@@ -6,10 +6,12 @@ use anyhow::{bail, Context};
 use std::path::Path;
 use tokio::io::{self, AsyncWriteExt};
 
-const DEFAULT_SHELL_SCRIPT: &str =
-    "command -v bash >/dev/null 2>&1 && exec bash || exec sh";
+const DEFAULT_SHELL_SCRIPT: &str = "command -v bash >/dev/null 2>&1 && exec bash || exec sh";
 
-pub async fn run(config_path: &Path, requested_shell: Option<&str>) -> anyhow::Result<super::CommandResult> {
+pub async fn run(
+    config_path: &Path,
+    requested_shell: Option<&str>,
+) -> anyhow::Result<super::CommandResult> {
     let config = Config::load(config_path).context("load configuration")?;
     let shell = shell_argv(requested_shell)?;
     let request = ExecRequest {
@@ -71,9 +73,7 @@ fn shell_argv(requested_shell: Option<&str>) -> anyhow::Result<Vec<String>> {
 }
 
 fn forward_output(result: io::Result<u64>) -> anyhow::Result<()> {
-    result
-        .map(|_| ())
-        .context("forward shell output")
+    result.map(|_| ()).context("forward shell output")
 }
 
 #[cfg(test)]

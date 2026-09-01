@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 pub enum Command {
     Check,
     Fix,
-    Init { image: PathBuf },
+    Init {
+        image: PathBuf,
+    },
     Shell {
         #[arg(long)]
         shell: Option<String>,

@@ -249,9 +249,7 @@ mod tests {
         assert_eq!(
             session.attachment(),
             &NetworkAttachment::Isolated {
-                namespace_path: Some(
-                    "/run/netns/kekkai-rt-ns-kekkai-rt-0123456789".to_owned()
-                )
+                namespace_path: Some("/run/netns/kekkai-rt-ns-kekkai-rt-0123456789".to_owned())
             }
         );
         session.cleanup().await.unwrap();
